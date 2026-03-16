@@ -78,16 +78,26 @@ def translate_text(text: str, target_lang: str, source_lang: str = "auto") -> st
     return "\n".join(translated_chunks)
 
 
+# ---------------------------------------------------------------------------
+# Word-level mapping
+# ---------------------------------------------------------------------------
+
+# Max words per batch — smaller batches = more reliable alignment
+_WORD_BATCH_SIZE = 25
+
+
 def build_word_map(text: str, target_lang: str, source_lang: str = "auto") -> dict:
     """Build a word-level translation dictionary from the source text.
 
-    Extracts every unique word, batch-translates them, and returns a mapping
-    ``{original_lower: translated_lower}``.
+    Extracts every unique word (≥2 chars), batch-translates them in small
+    groups (one word per line), and returns ``{original_lower: translated_lower}``.
+    Falls back to individual translation when a batch produces misaligned output.
     """
     if target_lang not in SUPPORTED_LANGUAGES:
         return {}
 
-    raw_words = re.findall(r"[\w']+", text, re.UNICODE)
+    # Extract words — letters/digits/apostrophes, skip pure numbers
+    raw_words = re.findall(r"[^\W\d_][\w']*", text, re.UNICODE)
 
     seen: set[str] = set()
     unique_words: list[str] = []
@@ -100,40 +110,56 @@ def build_word_map(text: str, target_lang: str, source_lang: str = "auto") -> di
     if not unique_words:
         return {}
 
-    # Build batches respecting the Google Translate char limit
-    batches: list[list[str]] = []
-    current_batch: list[str] = []
-    current_len = 0
-
-    for word in unique_words:
-        addition = len(word) + (1 if current_batch else 0)
-        if current_len + addition > _CHUNK_SIZE:
-            batches.append(current_batch)
-            current_batch = [word]
-            current_len = len(word)
-        else:
-            current_batch.append(word)
-            current_len += addition
-
-    if current_batch:
-        batches.append(current_batch)
-
     word_map: dict[str, str] = {}
 
-    for batch in batches:
+    def _translate_single(word: str) -> str | None:
+        """Translate one word individually (fallback)."""
+        try:
+            t = GoogleTranslator(source=source_lang, target=target_lang)
+            result = t.translate(word)
+            if result:
+                return result.strip().lower()
+        except Exception:
+            pass
+        return None
+
+    # Process in small fixed-size batches
+    for i in range(0, len(unique_words), _WORD_BATCH_SIZE):
+        batch = unique_words[i : i + _WORD_BATCH_SIZE]
         batch_text = "\n".join(batch)
+
         try:
             translator = GoogleTranslator(source=source_lang, target=target_lang)
             translated_batch = translator.translate(batch_text)
             if not translated_batch:
+                # Batch failed — try individually
+                for word in batch:
+                    trans = _translate_single(word)
+                    if trans and trans != word:
+                        word_map[word] = trans
                 continue
-            translated_words = translated_batch.split("\n")
-            for orig, trans in zip(batch, translated_words):
-                trans_clean = trans.strip().lower()
-                if trans_clean:
-                    word_map[orig] = trans_clean
+
+            translated_lines = translated_batch.split("\n")
+
+            # ── Validate line count ──
+            if len(translated_lines) == len(batch):
+                for orig, trans in zip(batch, translated_lines):
+                    trans_clean = trans.strip().lower()
+                    if trans_clean and trans_clean != orig:
+                        word_map[orig] = trans_clean
+            else:
+                # Misaligned — translate each word individually
+                for word in batch:
+                    trans = _translate_single(word)
+                    if trans and trans != word:
+                        word_map[word] = trans
+
         except Exception:
-            continue
+            # Batch error — translate individually
+            for word in batch:
+                trans = _translate_single(word)
+                if trans and trans != word:
+                    word_map[word] = trans
 
     return word_map
 
@@ -142,16 +168,76 @@ def build_word_map(text: str, target_lang: str, source_lang: str = "auto") -> di
 # Sentence splitting & alignment
 # ---------------------------------------------------------------------------
 
-_SENTENCE_RE = re.compile(
-    r"(?<=[.!?…])\s+|(?<=\n)\s*",
-    re.UNICODE,
-)
+# Common abbreviations that end with '.' but are NOT sentence boundaries
+_ABBREVIATIONS = frozenset({
+    "mr", "mrs", "ms", "dr", "prof", "sr", "jr", "vs", "etc", "inc",
+    "ltd", "st", "ave", "dept", "est", "vol", "no", "fig", "approx",
+    "cf", "al", "ed", "trans", "rev", "gen", "gov", "sgt", "cpl",
+    "pvt", "capt", "col", "maj", "lt", "cmdr", "adm", "corp", "co",
+    "e.g", "i.e", "p", "pp", "ch", "sec",
+})
+
+# Sentence-ending punctuation followed by whitespace
+_SENT_SPLIT_RE = re.compile(r"(?<=[.!?…])\s+", re.UNICODE)
 
 
 def _split_sentences(text: str) -> list[str]:
-    """Split text into sentences on punctuation or newline boundaries."""
-    sentences = _SENTENCE_RE.split(text)
-    return [s.strip() for s in sentences if s.strip()]
+    """Split text into sentences with robust handling of PDF line-wraps,
+    abbreviations, and paragraph boundaries.
+
+    Key improvements over naive splitting:
+    - Single newlines (PDF line-wraps) are replaced with spaces.
+    - Paragraph breaks (double-newlines) are respected.
+    - Abbreviations (Dr., Mr., etc.) don't create false sentence boundaries.
+    - Single-letter initials (A. B. Smith) don't split sentences.
+    """
+    if not text or not text.strip():
+        return []
+
+    # 1. Normalise paragraph breaks
+    text = re.sub(r"\n\s*\n", "\n\n", text)
+
+    # 2. Split into paragraphs on double-newlines
+    paragraphs = text.split("\n\n")
+
+    sentences: list[str] = []
+
+    for para in paragraphs:
+        # Replace single newlines (PDF line-wraps) with spaces
+        para = re.sub(r"\s*\n\s*", " ", para).strip()
+        if not para:
+            continue
+
+        # Split on sentence-ending punctuation followed by whitespace
+        raw_parts = _SENT_SPLIT_RE.split(para)
+
+        for part in raw_parts:
+            part = part.strip()
+            if not part:
+                continue
+
+            # Try to merge with previous sentence if it ended with an abbreviation
+            if sentences:
+                last = sentences[-1]
+                last_words = last.split()
+                if last_words:
+                    last_token = last_words[-1].rstrip(".")
+                    # Known abbreviation?
+                    if last_token.lower() in _ABBREVIATIONS:
+                        sentences[-1] = last + " " + part
+                        continue
+                    # Single-letter initial (e.g. "J." or "A.")?
+                    if re.search(r"\b[A-Za-z]\.$", last):
+                        sentences[-1] = last + " " + part
+                        continue
+                    # Number followed by period (e.g. "3." in a list)?
+                    if re.search(r"\b\d+\.$", last):
+                        sentences[-1] = last + " " + part
+                        continue
+
+            sentences.append(part)
+
+    return sentences
 
 
 def build_sentence_alignment(
@@ -160,8 +246,9 @@ def build_sentence_alignment(
 ) -> list[dict]:
     """Return a list of ``{"original": ..., "translated": ...}`` pairs.
 
-    Sentences are split heuristically.  If the counts differ, shorter list
-    is padded or longer list's trailing entries are merged into the last pair.
+    Sentences are split heuristically.  When the counts differ the shorter
+    text's sentences are **proportionally merged** so that every original
+    sentence maps to at least one translated sentence (or vice-versa).
     """
     orig_sents = _split_sentences(original_text)
     trans_sents = _split_sentences(translated_text)
@@ -171,12 +258,35 @@ def build_sentence_alignment(
     if not trans_sents:
         trans_sents = [translated_text.strip()] if translated_text.strip() else []
 
-    pairs: list[dict] = []
-    max_len = max(len(orig_sents), len(trans_sents))
+    if not orig_sents and not trans_sents:
+        return []
 
-    for i in range(max_len):
-        o = orig_sents[i] if i < len(orig_sents) else ""
-        t = trans_sents[i] if i < len(trans_sents) else ""
-        pairs.append({"original": o, "translated": t})
+    # Perfect match — pair 1:1
+    if len(orig_sents) == len(trans_sents):
+        return [
+            {"original": o, "translated": t}
+            for o, t in zip(orig_sents, trans_sents)
+        ]
+
+    # Mismatch — proportional alignment: keep the longer list intact,
+    # merge segments from the shorter list so every entry has a partner.
+    pairs: list[dict] = []
+    o_len = len(orig_sents)
+    t_len = len(trans_sents)
+
+    if o_len >= t_len:
+        # More original sentences — merge translated segments proportionally
+        for i in range(o_len):
+            t_start = round(i * t_len / o_len)
+            t_end = round((i + 1) * t_len / o_len)
+            merged_t = " ".join(trans_sents[t_start:t_end])
+            pairs.append({"original": orig_sents[i], "translated": merged_t})
+    else:
+        # More translated sentences — merge original segments proportionally
+        for i in range(t_len):
+            o_start = round(i * o_len / t_len)
+            o_end = round((i + 1) * o_len / t_len)
+            merged_o = " ".join(orig_sents[o_start:o_end])
+            pairs.append({"original": merged_o, "translated": trans_sents[i]})
 
     return pairs

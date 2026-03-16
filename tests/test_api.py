@@ -48,12 +48,16 @@ def test_translate_invalid_language():
     assert "language" in resp.json()["detail"].lower()
 
 
+@patch("app.routes.api.build_sentence_alignment")
+@patch("app.routes.api.build_word_map")
 @patch("app.routes.api.translate_text")
 @patch("app.routes.api.extract_text_from_pdf")
-def test_translate_success(mock_extract, mock_translate):
+def test_translate_success(mock_extract, mock_translate, mock_word_map, mock_sent_align):
     """POST /api/translate with valid inputs returns original + translated text."""
     mock_extract.return_value = "Hello world"
     mock_translate.return_value = "Hola mundo"
+    mock_word_map.return_value = {"hello": "hola", "world": "mundo"}
+    mock_sent_align.return_value = [{"original": "Hello world", "translated": "Hola mundo"}]
 
     resp = client.post(
         "/api/translate",

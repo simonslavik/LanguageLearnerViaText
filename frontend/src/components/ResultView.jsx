@@ -42,13 +42,20 @@ function CopyButton({ targetId }) {
   )
 }
 
-/** Render text as word-level <span> elements with data-word attrs. */
+/** Render text as word-level <span> elements with data-word attrs.
+ *  Normalise to match the backend regex: [^\W\d_][\w']* → lowercase.
+ */
 function WordRenderer({ text }) {
-  const tokens = text.split(/(\s+)/)
+  // Split into (word | non-word) tokens while keeping everything
+  const tokens = text.split(/([^\s]+)/)
   return tokens.map((token, i) => {
-    if (/^\s+$/.test(token)) return token
-    const normalized = token.replace(/[^\p{L}\p{N}'-]/gu, '').toLowerCase()
-    if (!normalized) return <span key={i}>{token}</span>
+    if (!token || /^\s+$/.test(token)) return token
+    // Extract the core word (letters + digits + apostrophes, matching backend)
+    const normalized = token
+      .replace(/^[^\p{L}\p{N}]+/u, '')   // strip leading punctuation
+      .replace(/[^\p{L}\p{N}]+$/u, '')   // strip trailing punctuation
+      .toLowerCase()
+    if (!normalized || normalized.length < 2) return <span key={i}>{token}</span>
     return (
       <span key={i} className="hoverable-word" data-word={normalized}>
         {token}
@@ -178,6 +185,30 @@ function ResultView({ result, onBack }) {
       .forEach((s) => s.classList.add('sentence-highlight'))
   }, [])
 
+  /** Find and highlight all DOM elements whose data-word matches a target,
+   *  checking both exact match and whether the data-word *contains* the target
+   *  (handles multi-word translations where the map value is a phrase). */
+  const highlightMatchingWords = useCallback((panelSelector, targetWord) => {
+    if (!targetWord) return
+    // Try exact match first
+    const escapedWord = CSS.escape(targetWord)
+    const exact = document.querySelectorAll(
+      `${panelSelector} [data-word="${escapedWord}"]`
+    )
+    if (exact.length) {
+      exact.forEach((el) => el.classList.add('word-cross-highlight'))
+      return
+    }
+    // Fallback: the translation might be multi-word — check if any
+    // data-word appears as a sub-word in the target or vice-versa
+    const words = targetWord.split(/\s+/)
+    words.forEach((w) => {
+      if (w.length < 2) return
+      document.querySelectorAll(`${panelSelector} [data-word="${CSS.escape(w)}"]`)
+        .forEach((el) => el.classList.add('word-cross-highlight'))
+    })
+  }, [])
+
   const handleOriginalHover = useCallback((e) => {
     const wordEl = e.target.closest('.hoverable-word')
     if (!wordEl) return
@@ -187,10 +218,9 @@ function ResultView({ result, onBack }) {
     const word = wordEl.dataset.word
     const translated = word_map?.[word]
     if (translated) {
-      document.querySelectorAll(`[data-word="${CSS.escape(translated)}"]`)
-        .forEach((el) => el.classList.add('word-cross-highlight'))
+      highlightMatchingWords('.translated-panel', translated)
     }
-  }, [word_map, clearHighlights, highlightSentence])
+  }, [word_map, clearHighlights, highlightSentence, highlightMatchingWords])
 
   const handleTranslatedHover = useCallback((e) => {
     const wordEl = e.target.closest('.hoverable-word')
@@ -202,11 +232,10 @@ function ResultView({ result, onBack }) {
     const originals = reverseMap[word]
     if (originals) {
       originals.forEach((orig) => {
-        document.querySelectorAll(`[data-word="${CSS.escape(orig)}"]`)
-          .forEach((el) => el.classList.add('word-cross-highlight'))
+        highlightMatchingWords('.original-panel', orig)
       })
     }
-  }, [reverseMap, clearHighlights, highlightSentence])
+  }, [reverseMap, clearHighlights, highlightSentence, highlightMatchingWords])
 
   // ── Tooltip JSX ──
   const tooltipJsx = tooltip && (
