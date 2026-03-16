@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+
+{% block title %}Translation Result — {{ filename }}{% endblock %}
+
+{% block content %}
+<section class="result-header">
+    <h1>Translation Result</h1>
+    <p class="result-meta">
+        <span><i class="fas fa-file-pdf"></i> {{ filename }}</span>
+        <span><i class="fas fa-arrow-right"></i></span>
+        <span><i class="fas fa-globe"></i> {{ target_lang }}</span>
+    </p>
+    <a href="{{ url_for('translation.index') }}" class="btn btn-outline">
+        <i class="fas fa-arrow-left"></i> Translate Another
+    </a>
+</section>
+
+<section class="translation-container">
+    <div class="text-panel original-panel">
+        <div class="panel-header">
+            <h2><i class="fas fa-file-alt"></i> Original Text</h2>
+            <button class="btn-copy" data-target="originalText" title="Copy to clipboard">
+                <i class="fas fa-copy"></i>
+            </button>
+        </div>
+        <div class="panel-body" id="originalText">{{ original_text }}</div>
+    </div>
+
+    <div class="text-panel translated-panel">
+        <div class="panel-header">
+            <h2><i class="fas fa-language"></i> Translated ({{ target_lang }})</h2>
+            <button class="btn-copy" data-target="translatedText" title="Copy to clipboard">
+                <i class="fas fa-copy"></i>
+            </button>
+        </div>
+        <div class="panel-body" id="translatedText">{{ translated_text }}</div>
+    </div>
+</section>
+{% endblock %}

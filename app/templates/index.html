@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+
+{% block title %}PDF Translator — Upload{% endblock %}
+
+{% block content %}
+<section class="hero">
+    <h1>Translate Your PDF Documents</h1>
+    <p class="hero-subtitle">
+        Upload a PDF file, pick a target language, and get an instant side-by-side translation.
+    </p>
+</section>
+
+<section class="upload-section">
+    <form
+        action="{{ url_for('translation.translate') }}"
+        method="POST"
+        enctype="multipart/form-data"
+        id="uploadForm"
+        class="upload-form"
+    >
+        <!-- File Drop Zone -->
+        <div class="drop-zone" id="dropZone">
+            <i class="fas fa-cloud-upload-alt drop-icon"></i>
+            <p class="drop-text">Drag & drop your PDF here</p>
+            <p class="drop-subtext">or click to browse</p>
+            <input
+                type="file"
+                name="pdf_file"
+                id="pdfFile"
+                accept=".pdf"
+                class="file-input"
+                required
+            />
+            <div class="file-info" id="fileInfo" style="display: none">
+                <i class="fas fa-file-pdf"></i>
+                <span id="fileName"></span>
+                <button type="button" class="remove-file" id="removeFile">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+        </div>
+
+        <!-- Language Select -->
+        <div class="form-group">
+            <label for="targetLang">
+                <i class="fas fa-globe"></i> Target Language
+            </label>
+            <select name="target_lang" id="targetLang" required>
+                <option value="" disabled selected>Select language…</option>
+                {% for code, name in languages.items() %}
+                <option value="{{ code }}">{{ name }}</option>
+                {% endfor %}
+            </select>
+        </div>
+
+        <!-- Submit -->
+        <button type="submit" class="btn btn-primary" id="submitBtn">
+            <i class="fas fa-language"></i> Translate
+        </button>
+    </form>
+</section>
+
+<!-- How It Works -->
+<section class="features">
+    <h2>How It Works</h2>
+    <div class="features-grid">
+        <div class="feature-card">
+            <div class="feature-icon"><i class="fas fa-upload"></i></div>
+            <h3>1. Upload</h3>
+            <p>Select or drag-and-drop a text-based PDF document.</p>
+        </div>
+        <div class="feature-card">
+            <div class="feature-icon"><i class="fas fa-cogs"></i></div>
+            <h3>2. Choose Language</h3>
+            <p>Pick your desired target language from the dropdown.</p>
+        </div>
+        <div class="feature-card">
+            <div class="feature-icon"><i class="fas fa-check-circle"></i></div>
+            <h3>3. View Translation</h3>
+            <p>See the original and translated text side by side.</p>
+        </div>
+    </div>
+</section>
+{% endblock %}
