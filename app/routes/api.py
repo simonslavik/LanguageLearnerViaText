@@ -7,7 +7,12 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
 from app.config import settings
 from app.services.pdf_parser import extract_text_from_pdf
-from app.services.translator import SUPPORTED_LANGUAGES, build_word_map, translate_text
+from app.services.translator import (
+    SUPPORTED_LANGUAGES,
+    build_sentence_alignment,
+    build_word_map,
+    translate_text,
+)
 from app.utils.helpers import allowed_file
 
 router = APIRouter(prefix="/api", tags=["translation"])
@@ -49,6 +54,7 @@ async def translate(
         original_text = extract_text_from_pdf(upload_path)
         translated_text = translate_text(original_text, target_lang)
         word_map = build_word_map(original_text, target_lang)
+        sentence_pairs = build_sentence_alignment(original_text, translated_text)
 
         return {
             "filename": pdf_file.filename,
@@ -57,6 +63,7 @@ async def translate(
             "original_text": original_text,
             "translated_text": translated_text,
             "word_map": word_map,
+            "sentence_pairs": sentence_pairs,
         }
 
     except ValueError as exc:

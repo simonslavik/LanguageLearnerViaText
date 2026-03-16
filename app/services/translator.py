@@ -1,6 +1,7 @@
 """Translation service — translates text to a target language using Google Translate."""
 
 import re
+from typing import Tuple
 
 from deep_translator import GoogleTranslator
 
@@ -135,3 +136,47 @@ def build_word_map(text: str, target_lang: str, source_lang: str = "auto") -> di
             continue
 
     return word_map
+
+
+# ---------------------------------------------------------------------------
+# Sentence splitting & alignment
+# ---------------------------------------------------------------------------
+
+_SENTENCE_RE = re.compile(
+    r"(?<=[.!?…])\s+|(?<=\n)\s*",
+    re.UNICODE,
+)
+
+
+def _split_sentences(text: str) -> list[str]:
+    """Split text into sentences on punctuation or newline boundaries."""
+    sentences = _SENTENCE_RE.split(text)
+    return [s.strip() for s in sentences if s.strip()]
+
+
+def build_sentence_alignment(
+    original_text: str,
+    translated_text: str,
+) -> list[dict]:
+    """Return a list of ``{"original": ..., "translated": ...}`` pairs.
+
+    Sentences are split heuristically.  If the counts differ, shorter list
+    is padded or longer list's trailing entries are merged into the last pair.
+    """
+    orig_sents = _split_sentences(original_text)
+    trans_sents = _split_sentences(translated_text)
+
+    if not orig_sents:
+        orig_sents = [original_text.strip()] if original_text.strip() else []
+    if not trans_sents:
+        trans_sents = [translated_text.strip()] if translated_text.strip() else []
+
+    pairs: list[dict] = []
+    max_len = max(len(orig_sents), len(trans_sents))
+
+    for i in range(max_len):
+        o = orig_sents[i] if i < len(orig_sents) else ""
+        t = trans_sents[i] if i < len(trans_sents) else ""
+        pairs.append({"original": o, "translated": t})
+
+    return pairs
