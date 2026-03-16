@@ -1,7 +1,7 @@
 """Translation service — translates text to a target language using Google Translate."""
 
 import re
-from typing import Tuple
+from typing import Optional, Tuple
 
 from deep_translator import GoogleTranslator
 
@@ -112,7 +112,7 @@ def build_word_map(text: str, target_lang: str, source_lang: str = "auto") -> di
 
     word_map: dict[str, str] = {}
 
-    def _translate_single(word: str) -> str | None:
+    def _translate_single(word: str) -> Optional[str]:
         """Translate one word individually (fallback)."""
         try:
             t = GoogleTranslator(source=source_lang, target=target_lang)
