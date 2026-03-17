@@ -52,9 +52,9 @@ async def translate(
             f.write(contents)
 
         original_text = extract_text_from_pdf(upload_path)
-        translated_text = translate_text(original_text, target_lang)
+        sentence_pairs = build_sentence_alignment(original_text, target_lang)
+        translated_text = " ".join(p["translated"] for p in sentence_pairs if p["translated"])
         word_map = build_word_map(original_text, target_lang)
-        sentence_pairs = build_sentence_alignment(original_text, translated_text)
 
         return {
             "filename": pdf_file.filename,

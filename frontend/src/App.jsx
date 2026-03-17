@@ -5,10 +5,28 @@ import ResultView from './components/ResultView'
 import Footer from './components/Footer'
 import './App.css'
 
-function App() {
-  const [result, setResult] = useState(null)
+const RESULT_KEY = 'translator_last_result'
 
-  const handleBack = () => setResult(null)
+function loadResult() {
+  try {
+    return JSON.parse(sessionStorage.getItem(RESULT_KEY))
+  } catch {
+    return null
+  }
+}
+
+function App() {
+  const [result, setResult] = useState(loadResult)
+
+  const handleResult = (data) => {
+    setResult(data)
+    try { sessionStorage.setItem(RESULT_KEY, JSON.stringify(data)) } catch { /* quota */ }
+  }
+
+  const handleBack = () => {
+    setResult(null)
+    sessionStorage.removeItem(RESULT_KEY)
+  }
 
   return (
     <div className="app">
@@ -17,7 +35,7 @@ function App() {
         {result ? (
           <ResultView result={result} onBack={handleBack} />
         ) : (
-          <UploadForm onResult={setResult} />
+          <UploadForm onResult={handleResult} />
         )}
       </main>
       <Footer />

@@ -45,10 +45,10 @@ def _chunk_text(text: str, max_len: int = _CHUNK_SIZE) -> list[str]:
         if split_idx == -1:
             # Fall back to the last space
             split_idx = text.rfind(" ", 0, max_len)
-        if split_idx == -1:
+        if split_idx <= 0:
             split_idx = max_len
         chunks.append(text[:split_idx])
-        text = text[split_idx:].lstrip("\n")
+        text = text[split_idx:].lstrip()
     return chunks
 
 
@@ -109,6 +109,9 @@ def build_word_map(text: str, target_lang: str, source_lang: str = "auto") -> di
 
     if not unique_words:
         return {}
+
+    # Cap to avoid excessive API calls on large documents
+    unique_words = unique_words[:200]
 
     word_map: dict[str, str] = {}
 
@@ -242,51 +245,56 @@ def _split_sentences(text: str) -> list[str]:
 
 def build_sentence_alignment(
     original_text: str,
-    translated_text: str,
+    target_lang: str,
+    source_lang: str = "auto",
 ) -> list[dict]:
-    """Return a list of ``{"original": ..., "translated": ...}`` pairs.
+    """Split original text into sentences, batch-translate them efficiently,
+    and return ``{"original": ..., "translated": ...}`` pairs with 1:1 alignment.
 
-    Sentences are split heuristically.  When the counts differ the shorter
-    text's sentences are **proportionally merged** so that every original
-    sentence maps to at least one translated sentence (or vice-versa).
+    Sentences are joined with a unique separator so the translation API
+    processes them in a single call per batch, keeping alignment intact.
     """
     orig_sents = _split_sentences(original_text)
-    trans_sents = _split_sentences(translated_text)
 
     if not orig_sents:
         orig_sents = [original_text.strip()] if original_text.strip() else []
-    if not trans_sents:
-        trans_sents = [translated_text.strip()] if translated_text.strip() else []
 
-    if not orig_sents and not trans_sents:
+    if not orig_sents:
         return []
 
-    # Perfect match — pair 1:1
-    if len(orig_sents) == len(trans_sents):
-        return [
-            {"original": o, "translated": t}
-            for o, t in zip(orig_sents, trans_sents)
-        ]
+    # Use a separator unlikely to appear in normal text
+    SEP = " ||| "
+    BATCH_CHAR_LIMIT = 4500  # stay under Google's 5k limit per request
 
-    # Mismatch — proportional alignment: keep the longer list intact,
-    # merge segments from the shorter list so every entry has a partner.
     pairs: list[dict] = []
-    o_len = len(orig_sents)
-    t_len = len(trans_sents)
+    batch: list[str] = []
+    batch_len = 0
 
-    if o_len >= t_len:
-        # More original sentences — merge translated segments proportionally
-        for i in range(o_len):
-            t_start = round(i * t_len / o_len)
-            t_end = round((i + 1) * t_len / o_len)
-            merged_t = " ".join(trans_sents[t_start:t_end])
-            pairs.append({"original": orig_sents[i], "translated": merged_t})
-    else:
-        # More translated sentences — merge original segments proportionally
-        for i in range(t_len):
-            o_start = round(i * o_len / t_len)
-            o_end = round((i + 1) * o_len / t_len)
-            merged_o = " ".join(orig_sents[o_start:o_end])
-            pairs.append({"original": merged_o, "translated": trans_sents[i]})
+    def _flush(batch: list[str]) -> None:
+        if not batch:
+            return
+        joined = SEP.join(batch)
+        try:
+            translated = translate_text(joined, target_lang, source_lang)
+        except Exception:
+            translated = SEP.join([""] * len(batch))
 
+        parts = translated.split("|||")
+        # Trim parts and pad/truncate to match batch length
+        parts = [p.strip() for p in parts]
+        while len(parts) < len(batch):
+            parts.append("")
+        for orig, trans in zip(batch, parts):
+            pairs.append({"original": orig, "translated": trans})
+
+    for sent in orig_sents:
+        new_len = batch_len + len(sent) + len(SEP)
+        if batch and new_len > BATCH_CHAR_LIMIT:
+            _flush(batch)
+            batch = []
+            batch_len = 0
+        batch.append(sent)
+        batch_len += len(sent) + len(SEP)
+
+    _flush(batch)
     return pairs
