@@ -13,7 +13,10 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
 from app.config import settings
+from app.database import connect_db, close_db
 from app.routes.api import router as api_router
+from app.routes.auth import router as auth_router
+from app.routes.history import router as history_router
 
 # Ensure the upload folder exists
 os.makedirs(settings.UPLOAD_FOLDER, exist_ok=True)
@@ -23,6 +26,17 @@ app = FastAPI(
     description="Upload a PDF and get an instant side-by-side translation.",
     version="1.0.0",
 )
+
+
+@app.on_event("startup")
+async def startup():
+    await connect_db()
+
+
+@app.on_event("shutdown")
+async def shutdown():
+    await close_db()
+
 
 # CORS — allow React dev server on :5173
 app.add_middleware(
@@ -34,6 +48,8 @@ app.add_middleware(
 
 # API routes
 app.include_router(api_router)
+app.include_router(auth_router)
+app.include_router(history_router)
 
 # Serve React production build for all non-API routes
 DIST_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "frontend", "dist")

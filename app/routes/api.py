@@ -2,10 +2,14 @@
 
 import os
 import uuid
+from datetime import datetime
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from bson import ObjectId
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
 from app.config import settings
+from app.database import get_db
+from app.services.auth import get_optional_user
 from app.services.pdf_parser import extract_text_from_pdf
 from app.services.translator import (
     SUPPORTED_LANGUAGES,
@@ -28,6 +32,7 @@ async def get_languages():
 async def translate(
     pdf_file: UploadFile = File(...),
     target_lang: str = Form(...),
+    user=Depends(get_optional_user),
 ):
     """Accept a PDF upload + target language and return original & translated text."""
 
@@ -56,7 +61,7 @@ async def translate(
         translated_text = " ".join(p["translated"] for p in sentence_pairs if p["translated"])
         word_map = build_word_map(original_text, target_lang)
 
-        return {
+        result = {
             "filename": pdf_file.filename,
             "target_lang": SUPPORTED_LANGUAGES[target_lang],
             "target_lang_code": target_lang,
@@ -65,6 +70,19 @@ async def translate(
             "word_map": word_map,
             "sentence_pairs": sentence_pairs,
         }
+
+        # Save to history if user is logged in
+        if user:
+            db = get_db()
+            history_doc = {
+                **result,
+                "user_id": ObjectId(user["_id"]),
+                "created_at": datetime.utcnow().isoformat(),
+            }
+            insert_result = await db.history.insert_one(history_doc)
+            result["history_id"] = str(insert_result.inserted_id)
+
+        return result
 
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
