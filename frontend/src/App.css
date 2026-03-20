@@ -383,6 +383,7 @@
 }
 
 .panel-body {
+  position: relative;
   padding: 1.5rem;
   white-space: normal;
   word-wrap: break-word;

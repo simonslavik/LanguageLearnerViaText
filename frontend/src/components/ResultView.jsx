@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useMemo, useEffect } from 'react'
+import { useState, useRef, useCallback, useMemo, useEffect, memo } from 'react'
 import { translateWord } from '../api'
 import VocabularyNotebook from './VocabularyNotebook'
 
@@ -43,7 +43,7 @@ function CopyButton({ targetId }) {
 }
 
 /** Render text as word-level <span> elements with data-word attrs. */
-function WordRenderer({ text }) {
+const WordRenderer = memo(function WordRenderer({ text }) {
   const tokens = text.split(/([^\s]+)/)
   return tokens.map((token, i) => {
     if (!token || /^\s+$/.test(token)) return token
@@ -58,10 +58,10 @@ function WordRenderer({ text }) {
       </span>
     )
   })
-}
+})
 
 /** Render sentence_pairs as sentence blocks with data-sentence index. */
-function SentenceBlockRenderer({ pairs, pinnedSet }) {
+const SentenceBlockRenderer = memo(function SentenceBlockRenderer({ pairs, pinnedSet }) {
   return pairs.map((pair, idx) => {
     const isPinned = pinnedSet.has(idx)
     return (
@@ -75,7 +75,7 @@ function SentenceBlockRenderer({ pairs, pinnedSet }) {
       </span>
     )
   })
-}
+})
 
 // ═══════════════════════════════════════════════════════════════════════════
 // ResultView
@@ -86,6 +86,7 @@ function ResultView({ result, onBack }) {
     filename,
     target_lang,
     target_lang_code,
+    source_lang_code,
     original_text,
     translated_text,
     word_map,
@@ -168,6 +169,7 @@ function ResultView({ result, onBack }) {
   const translatedPanelRef = useRef(null)
   const [tooltip, setTooltip] = useState(null)
   const [tooltipLoading, setTooltipLoading] = useState(false)
+  const [tooltipPanel, setTooltipPanel] = useState('original') // which panel the tooltip is in
 
   // ── Click a word → translate tooltip + save button ──
   const handleWordClick = useCallback(async (e) => {
@@ -180,23 +182,29 @@ function ResultView({ result, onBack }) {
     if (!displayWord) return
 
     const container = wordEl.closest('.panel-body') || originalPanelRef.current
+    const isTranslated = container === translatedPanelRef.current
     const containerRect = container.getBoundingClientRect()
     const rect = wordEl.getBoundingClientRect()
-    const x = rect.left - containerRect.left + rect.width / 2
-    const y = rect.top - containerRect.top
+    const x = rect.left - containerRect.left + container.scrollLeft + rect.width / 2
+    const y = rect.top - containerRect.top + container.scrollTop
 
+    setTooltipPanel(isTranslated ? 'translated' : 'original')
     setTooltip({ word: displayWord, translated: null, x, y })
     setTooltipLoading(true)
 
+    // Reverse direction when clicking in the translated panel
+    const toLang = isTranslated ? (source_lang_code || 'en') : target_lang_code
+    const fromLang = isTranslated ? target_lang_code : 'auto'
+
     try {
-      const data = await translateWord(displayWord, target_lang_code)
+      const data = await translateWord(displayWord, toLang, fromLang)
       setTooltip({ word: displayWord, translated: data.translated, x, y })
     } catch {
       setTooltip({ word: displayWord, translated: '⚠ Failed', x, y })
     } finally {
       setTooltipLoading(false)
     }
-  }, [target_lang_code])
+  }, [target_lang_code, source_lang_code])
 
   const closeTooltip = () => setTooltip(null)
 
@@ -419,7 +427,7 @@ function ResultView({ result, onBack }) {
               ? <SentenceBlockRenderer pairs={originalSentences} pinnedSet={pinnedSentences} />
               : <WordRenderer text={original_text} />
             }
-            {tooltipJsx}
+            {tooltipPanel === 'original' && tooltipJsx}
           </div>
         </div>
 
@@ -441,6 +449,7 @@ function ResultView({ result, onBack }) {
               ? <SentenceBlockRenderer pairs={translatedSentences} pinnedSet={pinnedSentences} />
               : <WordRenderer text={translated_text} />
             }
+            {tooltipPanel === 'translated' && tooltipJsx}
           </div>
         </div>
       </section>

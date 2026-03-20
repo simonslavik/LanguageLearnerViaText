@@ -31,10 +31,11 @@ export async function translatePdf(file, targetLang) {
   return data
 }
 
-export async function translateWord(word, targetLang) {
+export async function translateWord(word, targetLang, sourceLang = 'auto') {
   const formData = new FormData()
   formData.append('word', word)
   formData.append('target_lang', targetLang)
+  formData.append('source_lang', sourceLang)
 
   const res = await fetch(`${API_BASE}/translate-word`, {
     method: 'POST',

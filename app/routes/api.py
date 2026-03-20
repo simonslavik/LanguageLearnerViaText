@@ -11,6 +11,8 @@ from app.config import settings
 from app.database import get_db
 from app.services.auth import get_optional_user
 from app.services.pdf_parser import extract_text_from_pdf
+from langdetect import detect as detect_language
+
 from app.services.translator import (
     SUPPORTED_LANGUAGES,
     build_sentence_alignment,
@@ -57,6 +59,13 @@ async def translate(
             f.write(contents)
 
         original_text = extract_text_from_pdf(upload_path)
+
+        # Detect the source language so the frontend can do reverse translation
+        try:
+            source_lang_code = detect_language(original_text[:500])
+        except Exception:
+            source_lang_code = "en"  # fallback
+
         sentence_pairs = build_sentence_alignment(original_text, target_lang)
         translated_text = " ".join(p["translated"] for p in sentence_pairs if p["translated"])
         word_map = build_word_map(original_text, target_lang)
@@ -65,6 +74,7 @@ async def translate(
             "filename": pdf_file.filename,
             "target_lang": SUPPORTED_LANGUAGES[target_lang],
             "target_lang_code": target_lang,
+            "source_lang_code": source_lang_code,
             "original_text": original_text,
             "translated_text": translated_text,
             "word_map": word_map,
@@ -102,10 +112,11 @@ async def translate(
 async def translate_word(
     word: str = Form(...),
     target_lang: str = Form(...),
+    source_lang: str = Form("auto"),
 ):
     """Translate a single word or short phrase to the target language."""
 
-    if target_lang not in SUPPORTED_LANGUAGES:
+    if target_lang not in SUPPORTED_LANGUAGES and target_lang != "auto":
         raise HTTPException(status_code=400, detail="Please select a valid target language.")
 
     word = word.strip()
@@ -113,11 +124,11 @@ async def translate_word(
         raise HTTPException(status_code=400, detail="No word provided.")
 
     try:
-        translated = translate_text(word, target_lang)
+        translated = translate_text(word, target_lang, source_lang)
         return {
             "word": word,
             "translated": translated.strip(),
-            "target_lang": SUPPORTED_LANGUAGES[target_lang],
+            "target_lang": SUPPORTED_LANGUAGES.get(target_lang, target_lang),
         }
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Translation failed: {exc}")
