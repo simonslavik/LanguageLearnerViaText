@@ -145,56 +145,11 @@ function ResultView({ result, onBack }) {
     }
   }, [])
 
-  // ── Floating pin button (single DOM element, positioned on hover) ──
+  // ── Floating pin button ──
   const pinBtnRef = useRef(null)
   const hoveredSentenceIdx = useRef(null)
-
-  useEffect(() => {
-    const panel = originalPanelRef.current
-    if (!panel) return
-    const pinBtn = pinBtnRef.current
-    if (!pinBtn) return
-
-    const showPin = (e) => {
-      const target = e.target
-      // Walk up at most 2 levels to find sentence-block (word → sentence)
-      const sentEl = target.dataset?.sentence != null ? target
-        : target.parentElement?.dataset?.sentence != null ? target.parentElement
-        : null
-      if (!sentEl) {
-        pinBtn.style.opacity = '0'
-        pinBtn.style.pointerEvents = 'none'
-        hoveredSentenceIdx.current = null
-        return
-      }
-      const idx = parseInt(sentEl.dataset.sentence, 10)
-      if (idx === hoveredSentenceIdx.current) return
-      hoveredSentenceIdx.current = idx
-      const isPinned = pinnedSentences.has(idx)
-      pinBtn.classList.toggle('active', isPinned)
-      pinBtn.title = isPinned ? 'Unpin sentence' : 'Pin sentence'
-      // Position relative to panel
-      const panelRect = panel.getBoundingClientRect()
-      const sentRect = sentEl.getBoundingClientRect()
-      pinBtn.style.top = (sentRect.top - panelRect.top + panel.scrollTop) + 'px'
-      pinBtn.style.left = (sentRect.right - panelRect.left + panel.scrollLeft + 4) + 'px'
-      pinBtn.style.opacity = '1'
-      pinBtn.style.pointerEvents = 'auto'
-    }
-
-    const hidePin = () => {
-      pinBtn.style.opacity = '0'
-      pinBtn.style.pointerEvents = 'none'
-      hoveredSentenceIdx.current = null
-    }
-
-    panel.addEventListener('mouseover', showPin, { passive: true })
-    panel.addEventListener('mouseleave', hidePin, { passive: true })
-    return () => {
-      panel.removeEventListener('mouseover', showPin)
-      panel.removeEventListener('mouseleave', hidePin)
-    }
-  }, [pinnedSentences])
+  const pinnedRef = useRef(pinnedSentences)
+  pinnedRef.current = pinnedSentences
 
   const handlePinClick = useCallback(() => {
     const idx = hoveredSentenceIdx.current
@@ -269,148 +224,125 @@ function ResultView({ result, onBack }) {
     return rm
   }, [word_map])
 
-  // ── Cross-panel highlight — native events + pre-built maps ──
+  // ── Cross-panel highlight (JS only for cross-panel; same-panel is pure CSS) ──
   const highlightedEls = useRef([])
-  const lastHoveredWord = useRef(null)
-  const rafId = useRef(0)
+  const lastWord = useRef(null)
 
-  // Pre-built word→elements maps per panel (avoids querySelectorAll on hover)
-  const origWordIndex = useRef(new Map())  // Map<"word:sentenceIdx", Element[]>
+  const origWordIndex = useRef(new Map())
   const transWordIndex = useRef(new Map())
-  const origSentenceIndex = useRef(new Map()) // Map<sentenceIdx, Element>
+  const origSentenceIndex = useRef(new Map())
   const transSentenceIndex = useRef(new Map())
 
-  // Build indexes after DOM renders
+  // Build indexes once after render
   useEffect(() => {
-    const buildIndex = (panelRef, wordIdx, sentIdx) => {
-      wordIdx.current = new Map()
-      sentIdx.current = new Map()
+    const build = (panelRef, wIdx, sIdx) => {
+      wIdx.current = new Map()
+      sIdx.current = new Map()
       const panel = panelRef.current
       if (!panel) return
-      panel.querySelectorAll('.sentence-block').forEach((el) => {
-        sentIdx.current.set(el.dataset.sentence, el)
-      })
-      panel.querySelectorAll('.hoverable-word').forEach((el) => {
+      for (const sb of panel.querySelectorAll('.sentence-block'))
+        sIdx.current.set(sb.dataset.sentence, sb)
+      for (const el of panel.querySelectorAll('.hoverable-word')) {
         const w = el.dataset.word
-        const s = el.closest('.sentence-block')?.dataset.sentence
+        const s = el.parentElement?.dataset?.sentence
         const key = s != null ? `${w}:${s}` : w
-        let arr = wordIdx.current.get(key)
-        if (!arr) { arr = []; wordIdx.current.set(key, arr) }
+        const arr = wIdx.current.get(key) || []
         arr.push(el)
-      })
+        wIdx.current.set(key, arr)
+      }
     }
-    // Small timeout to ensure DOM is flushed
-    const t = setTimeout(() => {
-      buildIndex(originalPanelRef, origWordIndex, origSentenceIndex)
-      buildIndex(translatedPanelRef, transWordIndex, transSentenceIndex)
-    }, 50)
-    return () => clearTimeout(t)
+    build(originalPanelRef, origWordIndex, origSentenceIndex)
+    build(translatedPanelRef, transWordIndex, transSentenceIndex)
   }, [originalSentences, translatedSentences])
 
-  const clearHighlights = () => {
-    const els = highlightedEls.current
-    for (let i = els.length - 1; i >= 0; i--) {
-      els[i].classList.remove('word-cross-highlight', 'sentence-highlight')
-    }
-    highlightedEls.current = []
-  }
-
-  const mark = (el, cls) => {
-    el.classList.add(cls)
-    highlightedEls.current.push(el)
-  }
-
-  const lookupWords = (wordIdx, word, sentenceIdx) => {
-    // Try exact key with sentence scope first
-    if (sentenceIdx != null) {
-      const els = wordIdx.current.get(`${word}:${sentenceIdx}`)
-      if (els) return els
-    }
-    // Fallback: collect all sentences for this word
-    const out = []
-    for (const [k, v] of wordIdx.current) {
-      if (k === word || k.startsWith(word + ':')) out.push(...v)
-    }
-    return out
-  }
-
-  // Attach native events (bypass React synthetic events)
+  // Cross-panel highlight + pin button
   useEffect(() => {
     const origPanel = originalPanelRef.current
     const transPanel = translatedPanelRef.current
     if (!origPanel || !transPanel) return
+    const pinBtn = pinBtnRef.current
 
-    const handleHover = (e, isOriginal) => {
-      const target = e.target
-      // Fast exit: if target has no dataset it's a text node parent or panel
-      if (!target.dataset) return
-      // Only proceed if target IS a hoverable-word (avoid closest() traversal)
-      const wordEl = target.classList?.contains('hoverable-word') ? target : null
-      if (!wordEl || wordEl === lastHoveredWord.current) return
-      lastHoveredWord.current = wordEl
-      cancelAnimationFrame(rafId.current)
-      rafId.current = requestAnimationFrame(() => {
-        clearHighlights()
-        // Sentence highlight
-        const sentEl = wordEl.parentElement  // sentence-block is direct parent
-        const sentIdx = sentEl?.dataset?.sentence
-        if (sentEl && sentIdx != null) {
-          mark(sentEl, 'sentence-highlight')
-          const otherSentMap = isOriginal ? transSentenceIndex : origSentenceIndex
-          const otherSent = otherSentMap.current.get(sentIdx)
-          if (otherSent) mark(otherSent, 'sentence-highlight')
-        }
-        // Word highlight — hovered word
-        mark(wordEl, 'word-cross-highlight')
-        const word = wordEl.dataset.word
-        // Cross-panel word matching
-        if (isOriginal) {
-          const translated = word_map?.[word]
-          if (translated) {
-            const words = translated.split(/\s+/)
-            for (const tw of words) {
-              if (tw.length < 2) continue
-              const els = lookupWords(transWordIndex, tw, sentIdx)
-              for (const el of els) mark(el, 'word-cross-highlight')
-            }
-          }
-        } else {
-          const originals = reverseMap[word]
-          if (originals) {
-            for (const orig of originals) {
-              const words = orig.split(/\s+/)
-              for (const ow of words) {
-                if (ow.length < 2) continue
-                const els = lookupWords(origWordIndex, ow, sentIdx)
-                for (const el of els) mark(el, 'word-cross-highlight')
-              }
-            }
-          }
-        }
-      })
+    const clear = () => {
+      const h = highlightedEls.current
+      for (let i = h.length - 1; i >= 0; i--)
+        h[i].classList.remove('word-cross-highlight', 'sentence-highlight')
+      h.length = 0
     }
 
-    const handleLeave = () => {
-      lastHoveredWord.current = null
-      cancelAnimationFrame(rafId.current)
-      rafId.current = requestAnimationFrame(clearHighlights)
+    const handleHover = (e, isOrig) => {
+      const t = e.target
+      if (!t.classList?.contains('hoverable-word')) return
+      if (t === lastWord.current) return
+      lastWord.current = t
+      clear()
+
+      const h = highlightedEls.current
+      const sentEl = t.parentElement
+      const si = sentEl?.dataset?.sentence
+
+      // Cross-panel sentence highlight (same-panel sentence is handled by CSS :has())
+      if (si != null) {
+        const other = (isOrig ? transSentenceIndex : origSentenceIndex).current.get(si)
+        if (other) { other.classList.add('sentence-highlight'); h.push(other) }
+      }
+
+      // Cross-panel word matching
+      const word = t.dataset.word
+      const cross = isOrig ? transWordIndex : origWordIndex
+      let lookups
+      if (isOrig) {
+        const tr = word_map?.[word]
+        if (tr) lookups = tr.split(/\s+/)
+      } else {
+        const origs = reverseMap[word]
+        if (origs) { lookups = []; for (const o of origs) for (const p of o.split(/\s+/)) lookups.push(p) }
+      }
+      if (lookups) {
+        for (const lw of lookups) {
+          if (lw.length < 2) continue
+          const els = (si != null && cross.current.get(`${lw}:${si}`)) || cross.current.get(lw)
+          if (els) for (const el of els) { el.classList.add('word-cross-highlight'); h.push(el) }
+        }
+      }
     }
 
-    const onOrigOver = (e) => handleHover(e, true)
-    const onTransOver = (e) => handleHover(e, false)
+    const handleLeave = () => { lastWord.current = null; clear() }
 
-    // Use mouseover — only fires on element boundary crossing, not every pixel
-    origPanel.addEventListener('mouseover', onOrigOver, { passive: true })
-    origPanel.addEventListener('mouseleave', handleLeave, { passive: true })
-    transPanel.addEventListener('mouseover', onTransOver, { passive: true })
+    // Pin button — fires on original panel only
+    const showPin = (e) => {
+      if (!pinBtn) return
+      const t = e.target
+      const sentEl = t.dataset?.sentence != null ? t : t.parentElement?.dataset?.sentence != null ? t.parentElement : null
+      if (!sentEl) { pinBtn.style.opacity = '0'; pinBtn.style.pointerEvents = 'none'; hoveredSentenceIdx.current = null; return }
+      const idx = parseInt(sentEl.dataset.sentence, 10)
+      if (idx === hoveredSentenceIdx.current) return
+      hoveredSentenceIdx.current = idx
+      const isPinned = pinnedRef.current.has(idx)
+      pinBtn.classList.toggle('active', isPinned)
+      pinBtn.title = isPinned ? 'Unpin sentence' : 'Pin sentence'
+      const pr = origPanel.getBoundingClientRect()
+      const sr = sentEl.getBoundingClientRect()
+      pinBtn.style.top = (sr.top - pr.top + origPanel.scrollTop) + 'px'
+      pinBtn.style.left = (sr.right - pr.left + origPanel.scrollLeft + 4) + 'px'
+      pinBtn.style.opacity = '1'
+      pinBtn.style.pointerEvents = 'auto'
+    }
+    const hidePin = () => { if (pinBtn) { pinBtn.style.opacity = '0'; pinBtn.style.pointerEvents = 'none'; hoveredSentenceIdx.current = null } }
+
+    const onOrig = (e) => { handleHover(e, true); showPin(e) }
+    const onTrans = (e) => handleHover(e, false)
+    const onOrigLeave = () => { handleLeave(); hidePin() }
+
+    origPanel.addEventListener('mouseover', onOrig, { passive: true })
+    origPanel.addEventListener('mouseleave', onOrigLeave, { passive: true })
+    transPanel.addEventListener('mouseover', onTrans, { passive: true })
     transPanel.addEventListener('mouseleave', handleLeave, { passive: true })
 
     return () => {
-      origPanel.removeEventListener('mouseover', onOrigOver)
-      origPanel.removeEventListener('mouseleave', handleLeave)
-      transPanel.removeEventListener('mouseover', onTransOver)
+      origPanel.removeEventListener('mouseover', onOrig)
+      origPanel.removeEventListener('mouseleave', onOrigLeave)
+      transPanel.removeEventListener('mouseover', onTrans)
       transPanel.removeEventListener('mouseleave', handleLeave)
-      cancelAnimationFrame(rafId.current)
     }
   }, [word_map, reverseMap, originalSentences, translatedSentences])
 

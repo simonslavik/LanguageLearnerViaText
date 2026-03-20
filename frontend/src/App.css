@@ -391,7 +391,7 @@
   max-height: 70vh;
   overflow-y: auto;
   letter-spacing: 0.01em;
-  contain: layout style;
+  contain: layout style paint;
 }
 
 /* ---------- Footer ---------- */
@@ -413,6 +413,17 @@
   cursor: pointer;
   border-radius: 3px;
   padding: 0 1px;
+}
+
+/* Instant hover feedback — pure CSS, no JS needed */
+.hoverable-word:hover {
+  background: rgba(79, 70, 229, 0.22);
+  color: var(--primary-dark);
+}
+
+/* Instant same-panel sentence highlight via CSS :has() */
+.sentence-block:has(.hoverable-word:hover) {
+  background: rgba(79, 70, 229, 0.08);
 }
 
 /* Cross-panel highlight applied via JS classList */
