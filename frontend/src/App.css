@@ -519,32 +519,6 @@
   box-shadow: 0 2px 0 #f59e0b;
 }
 
-/* ── Floating Pin Button (single element, positioned via JS) ── */
-.btn-pin-float {
-  position: absolute;
-  z-index: 5;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  cursor: pointer;
-  font-size: 0.7rem;
-  padding: 0.15rem 0.35rem;
-  color: var(--text-muted);
-  line-height: 1;
-  will-change: opacity, top, left;
-}
-
-.btn-pin-float:hover {
-  color: #f59e0b;
-  border-color: #f59e0b;
-}
-
-.btn-pin-float.active {
-  color: #f59e0b;
-  border-color: #f59e0b;
-  transform: rotate(-45deg);
-}
-
 /* ── Sentence flash animation for scroll-to ── */
 @keyframes sentenceFlash {
   0% { background: rgba(251, 191, 36, 0.35); }

@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useMemo, useEffect, memo } from 'react'
+import { useState, useRef, useCallback, useMemo, useEffect } from 'react'
 import { translateWord } from '../api'
 import VocabularyNotebook from './VocabularyNotebook'
 
@@ -42,18 +42,14 @@ function CopyButton({ targetId }) {
   )
 }
 
-/** Render text as word-level <span> elements with data-word attrs.
- *  Normalise to match the backend regex: [^\W\d_][\w']* → lowercase.
- */
-const WordRenderer = memo(function WordRenderer({ text }) {
-  // Split into (word | non-word) tokens while keeping everything
+/** Render text as word-level <span> elements with data-word attrs. */
+function WordRenderer({ text }) {
   const tokens = text.split(/([^\s]+)/)
   return tokens.map((token, i) => {
     if (!token || /^\s+$/.test(token)) return token
-    // Extract the core word (letters + digits + apostrophes, matching backend)
     const normalized = token
-      .replace(/^[^\p{L}\p{N}]+/u, '')   // strip leading punctuation
-      .replace(/[^\p{L}\p{N}]+$/u, '')   // strip trailing punctuation
+      .replace(/^[^\p{L}\p{N}]+/u, '')
+      .replace(/[^\p{L}\p{N}]+$/u, '')
       .toLowerCase()
     if (!normalized || normalized.length < 2) return <span key={i}>{token}</span>
     return (
@@ -62,11 +58,10 @@ const WordRenderer = memo(function WordRenderer({ text }) {
       </span>
     )
   })
-})
+}
 
 /** Render sentence_pairs as sentence blocks with data-sentence index. */
-const SentenceBlockRenderer = memo(function SentenceBlockRenderer({ pairs, pinnedArr }) {
-  const pinnedSet = useMemo(() => new Set(pinnedArr), [pinnedArr])
+function SentenceBlockRenderer({ pairs, pinnedSet }) {
   return pairs.map((pair, idx) => {
     const isPinned = pinnedSet.has(idx)
     return (
@@ -80,7 +75,7 @@ const SentenceBlockRenderer = memo(function SentenceBlockRenderer({ pairs, pinne
       </span>
     )
   })
-})
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // ResultView
@@ -121,12 +116,6 @@ function ResultView({ result, onBack }) {
     sessionStorage.setItem(PINS_KEY, JSON.stringify([...pinnedSentences]))
   }, [pinnedSentences])
 
-  // Stable sorted array for SentenceBlockRenderer memo comparison
-  const pinnedArr = useMemo(
-    () => [...pinnedSentences].sort((a, b) => a - b),
-    [pinnedSentences],
-  )
-
   const togglePin = useCallback((idx) => {
     setPinnedSentences((prev) => {
       const next = new Set(prev)
@@ -145,15 +134,13 @@ function ResultView({ result, onBack }) {
     }
   }, [])
 
-  // ── Floating pin button ──
-  const pinBtnRef = useRef(null)
-  const hoveredSentenceIdx = useRef(null)
-  const pinnedRef = useRef(pinnedSentences)
-  pinnedRef.current = pinnedSentences
-
-  const handlePinClick = useCallback(() => {
-    const idx = hoveredSentenceIdx.current
-    if (idx != null) togglePin(idx)
+  // ── Right-click to pin a sentence (no floating button = no lag) ──
+  const handleContextMenu = useCallback((e) => {
+    const sentEl = e.target.closest('.sentence-block')
+    if (!sentEl) return
+    e.preventDefault()
+    const idx = parseInt(sentEl.dataset.sentence, 10)
+    if (!isNaN(idx)) togglePin(idx)
   }, [togglePin])
 
   // ── Vocabulary Notebook ──
@@ -224,127 +211,68 @@ function ResultView({ result, onBack }) {
     return rm
   }, [word_map])
 
-  // ── Cross-panel highlight (JS only for cross-panel; same-panel is pure CSS) ──
-  const highlightedEls = useRef([])
-  const lastWord = useRef(null)
+  // ── Cross-panel word + sentence highlight (same approach as pre-pin version) ──
+  const clearHighlights = useCallback(() => {
+    document.querySelectorAll('.word-cross-highlight')
+      .forEach((el) => el.classList.remove('word-cross-highlight'))
+    document.querySelectorAll('.sentence-highlight')
+      .forEach((el) => el.classList.remove('sentence-highlight'))
+  }, [])
 
-  const origWordIndex = useRef(new Map())
-  const transWordIndex = useRef(new Map())
-  const origSentenceIndex = useRef(new Map())
-  const transSentenceIndex = useRef(new Map())
+  const highlightSentence = useCallback((el) => {
+    const sentenceEl = el.closest('.sentence-block')
+    if (!sentenceEl) return
+    const idx = sentenceEl.dataset.sentence
+    sentenceEl.classList.add('sentence-highlight')
+    document.querySelectorAll(`.sentence-block[data-sentence="${idx}"]`)
+      .forEach((s) => s.classList.add('sentence-highlight'))
+  }, [])
 
-  // Build indexes once after render
-  useEffect(() => {
-    const build = (panelRef, wIdx, sIdx) => {
-      wIdx.current = new Map()
-      sIdx.current = new Map()
-      const panel = panelRef.current
-      if (!panel) return
-      for (const sb of panel.querySelectorAll('.sentence-block'))
-        sIdx.current.set(sb.dataset.sentence, sb)
-      for (const el of panel.querySelectorAll('.hoverable-word')) {
-        const w = el.dataset.word
-        const s = el.parentElement?.dataset?.sentence
-        const key = s != null ? `${w}:${s}` : w
-        const arr = wIdx.current.get(key) || []
-        arr.push(el)
-        wIdx.current.set(key, arr)
-      }
+  const highlightMatchingWords = useCallback((panelSelector, targetWord) => {
+    if (!targetWord) return
+    const escapedWord = CSS.escape(targetWord)
+    const exact = document.querySelectorAll(
+      `${panelSelector} [data-word="${escapedWord}"]`
+    )
+    if (exact.length) {
+      exact.forEach((el) => el.classList.add('word-cross-highlight'))
+      return
     }
-    build(originalPanelRef, origWordIndex, origSentenceIndex)
-    build(translatedPanelRef, transWordIndex, transSentenceIndex)
-  }, [originalSentences, translatedSentences])
+    const words = targetWord.split(/\s+/)
+    words.forEach((w) => {
+      if (w.length < 2) return
+      document.querySelectorAll(`${panelSelector} [data-word="${CSS.escape(w)}"]`)
+        .forEach((el) => el.classList.add('word-cross-highlight'))
+    })
+  }, [])
 
-  // Cross-panel highlight + pin button
-  useEffect(() => {
-    const origPanel = originalPanelRef.current
-    const transPanel = translatedPanelRef.current
-    if (!origPanel || !transPanel) return
-    const pinBtn = pinBtnRef.current
-
-    const clear = () => {
-      const h = highlightedEls.current
-      for (let i = h.length - 1; i >= 0; i--)
-        h[i].classList.remove('word-cross-highlight', 'sentence-highlight')
-      h.length = 0
+  const handleOriginalHover = useCallback((e) => {
+    const wordEl = e.target.closest('.hoverable-word')
+    if (!wordEl) return
+    clearHighlights()
+    highlightSentence(wordEl)
+    wordEl.classList.add('word-cross-highlight')
+    const word = wordEl.dataset.word
+    const translated = word_map?.[word]
+    if (translated) {
+      highlightMatchingWords('.translated-panel', translated)
     }
+  }, [word_map, clearHighlights, highlightSentence, highlightMatchingWords])
 
-    const handleHover = (e, isOrig) => {
-      const t = e.target
-      if (!t.classList?.contains('hoverable-word')) return
-      if (t === lastWord.current) return
-      lastWord.current = t
-      clear()
-
-      const h = highlightedEls.current
-      const sentEl = t.parentElement
-      const si = sentEl?.dataset?.sentence
-
-      // Cross-panel sentence highlight (same-panel sentence is handled by CSS :has())
-      if (si != null) {
-        const other = (isOrig ? transSentenceIndex : origSentenceIndex).current.get(si)
-        if (other) { other.classList.add('sentence-highlight'); h.push(other) }
-      }
-
-      // Cross-panel word matching
-      const word = t.dataset.word
-      const cross = isOrig ? transWordIndex : origWordIndex
-      let lookups
-      if (isOrig) {
-        const tr = word_map?.[word]
-        if (tr) lookups = tr.split(/\s+/)
-      } else {
-        const origs = reverseMap[word]
-        if (origs) { lookups = []; for (const o of origs) for (const p of o.split(/\s+/)) lookups.push(p) }
-      }
-      if (lookups) {
-        for (const lw of lookups) {
-          if (lw.length < 2) continue
-          const els = (si != null && cross.current.get(`${lw}:${si}`)) || cross.current.get(lw)
-          if (els) for (const el of els) { el.classList.add('word-cross-highlight'); h.push(el) }
-        }
-      }
+  const handleTranslatedHover = useCallback((e) => {
+    const wordEl = e.target.closest('.hoverable-word')
+    if (!wordEl) return
+    clearHighlights()
+    highlightSentence(wordEl)
+    wordEl.classList.add('word-cross-highlight')
+    const word = wordEl.dataset.word
+    const originals = reverseMap[word]
+    if (originals) {
+      originals.forEach((orig) => {
+        highlightMatchingWords('.original-panel', orig)
+      })
     }
-
-    const handleLeave = () => { lastWord.current = null; clear() }
-
-    // Pin button — fires on original panel only
-    const showPin = (e) => {
-      if (!pinBtn) return
-      const t = e.target
-      const sentEl = t.dataset?.sentence != null ? t : t.parentElement?.dataset?.sentence != null ? t.parentElement : null
-      if (!sentEl) { pinBtn.style.opacity = '0'; pinBtn.style.pointerEvents = 'none'; hoveredSentenceIdx.current = null; return }
-      const idx = parseInt(sentEl.dataset.sentence, 10)
-      if (idx === hoveredSentenceIdx.current) return
-      hoveredSentenceIdx.current = idx
-      const isPinned = pinnedRef.current.has(idx)
-      pinBtn.classList.toggle('active', isPinned)
-      pinBtn.title = isPinned ? 'Unpin sentence' : 'Pin sentence'
-      const pr = origPanel.getBoundingClientRect()
-      const sr = sentEl.getBoundingClientRect()
-      pinBtn.style.top = (sr.top - pr.top + origPanel.scrollTop) + 'px'
-      pinBtn.style.left = (sr.right - pr.left + origPanel.scrollLeft + 4) + 'px'
-      pinBtn.style.opacity = '1'
-      pinBtn.style.pointerEvents = 'auto'
-    }
-    const hidePin = () => { if (pinBtn) { pinBtn.style.opacity = '0'; pinBtn.style.pointerEvents = 'none'; hoveredSentenceIdx.current = null } }
-
-    const onOrig = (e) => { handleHover(e, true); showPin(e) }
-    const onTrans = (e) => handleHover(e, false)
-    const onOrigLeave = () => { handleLeave(); hidePin() }
-
-    origPanel.addEventListener('mouseover', onOrig, { passive: true })
-    origPanel.addEventListener('mouseleave', onOrigLeave, { passive: true })
-    transPanel.addEventListener('mouseover', onTrans, { passive: true })
-    transPanel.addEventListener('mouseleave', handleLeave, { passive: true })
-
-    return () => {
-      origPanel.removeEventListener('mouseover', onOrig)
-      origPanel.removeEventListener('mouseleave', onOrigLeave)
-      transPanel.removeEventListener('mouseover', onTrans)
-      transPanel.removeEventListener('mouseleave', handleLeave)
-    }
-  }, [word_map, reverseMap, originalSentences, translatedSentences])
+  }, [reverseMap, clearHighlights, highlightSentence, highlightMatchingWords])
 
   // ── Tooltip JSX ──
   const tooltipJsx = tooltip && (
@@ -393,7 +321,7 @@ function ResultView({ result, onBack }) {
           <span><i className="fas fa-globe"></i> {target_lang}</span>
         </p>
         <p className="result-hint">
-          <i className="fas fa-mouse-pointer"></i> Hover words to highlight matches &amp; sentences &middot; Click a word for translation &amp; save
+          <i className="fas fa-mouse-pointer"></i> Hover words to highlight &middot; Click for translation &middot; Right-click a sentence to pin it
         </p>
 
         <div className="result-toolbar">
@@ -431,7 +359,7 @@ function ResultView({ result, onBack }) {
             </button>
           </div>
           {pinnedSentences.size === 0 ? (
-            <p className="pins-empty">No pinned sentences yet. Click the <i className="fas fa-thumbtack"></i> icon next to any sentence to pin it.</p>
+            <p className="pins-empty">No pinned sentences yet. Right-click any sentence to pin it.</p>
           ) : (
             <ul className="pins-list">
               {[...pinnedSentences].sort((a, b) => a - b).map((idx) => {
@@ -482,22 +410,16 @@ function ResultView({ result, onBack }) {
             className="panel-body interactive-text"
             id="originalText"
             ref={originalPanelRef}
+            onMouseOver={handleOriginalHover}
+            onMouseOut={clearHighlights}
             onClick={handleWordClick}
+            onContextMenu={handleContextMenu}
           >
             {hasSentences
-              ? <SentenceBlockRenderer pairs={originalSentences} pinnedArr={pinnedArr} />
+              ? <SentenceBlockRenderer pairs={originalSentences} pinnedSet={pinnedSentences} />
               : <WordRenderer text={original_text} />
             }
             {tooltipJsx}
-            {/* Single floating pin button */}
-            <button
-              ref={pinBtnRef}
-              className="btn-pin-float"
-              onClick={handlePinClick}
-              style={{ opacity: 0, pointerEvents: 'none' }}
-            >
-              <i className="fas fa-thumbtack"></i>
-            </button>
           </div>
         </div>
 
@@ -510,10 +432,13 @@ function ResultView({ result, onBack }) {
             className="panel-body interactive-text"
             id="translatedText"
             ref={translatedPanelRef}
+            onMouseOver={handleTranslatedHover}
+            onMouseOut={clearHighlights}
             onClick={handleWordClick}
+            onContextMenu={handleContextMenu}
           >
             {hasSentences
-              ? <SentenceBlockRenderer pairs={translatedSentences} pinnedArr={pinnedArr} />
+              ? <SentenceBlockRenderer pairs={translatedSentences} pinnedSet={pinnedSentences} />
               : <WordRenderer text={translated_text} />
             }
           </div>
