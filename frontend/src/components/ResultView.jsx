@@ -83,13 +83,14 @@ const SentenceBlockRenderer = memo(function SentenceBlockRenderer({ pairs, pinne
 
 function ResultView({ result, onBack }) {
   const {
-    filename,
     target_lang,
     target_lang_code,
     source_lang_code,
     original_text,
     translated_text,
     word_map,
+    word_freq_tiers,
+    translated_word_freq_tiers,
     sentence_pairs,
   } = result
 
@@ -104,6 +105,10 @@ function ResultView({ result, onBack }) {
   )
   const hasSentences = originalSentences.length > 0
 
+  // ── Word Frequency Tiers (from backend, based on real language frequency data) ──
+  const wordFreqTiers = useMemo(() => word_freq_tiers || {}, [word_freq_tiers])
+  const translatedFreqTiers = useMemo(() => translated_word_freq_tiers || {}, [translated_word_freq_tiers])
+
   // ── Pinned Sentences ──
   const PINS_KEY = 'translator_pinned_sentences'
   const [pinnedSentences, setPinnedSentences] = useState(() => {
@@ -112,6 +117,8 @@ function ResultView({ result, onBack }) {
     } catch { return new Set() }
   })
   const [pinsOpen, setPinsOpen] = useState(false)
+  const [pinMode, setPinMode] = useState(false)
+  const [freqHighlight, setFreqHighlight] = useState(false)
 
   useEffect(() => {
     sessionStorage.setItem(PINS_KEY, JSON.stringify([...pinnedSentences]))
@@ -135,7 +142,7 @@ function ResultView({ result, onBack }) {
     }
   }, [])
 
-  // ── Right-click to pin a sentence (no floating button = no lag) ──
+  // ── Right-click OR inline pin button to pin a sentence ──
   const handleContextMenu = useCallback((e) => {
     const sentEl = e.target.closest('.sentence-block')
     if (!sentEl) return
@@ -171,6 +178,86 @@ function ResultView({ result, onBack }) {
   const [tooltipLoading, setTooltipLoading] = useState(false)
   const [tooltipPanel, setTooltipPanel] = useState('original') // which panel the tooltip is in
 
+  // ── Synchronized scrolling (sentence-aligned) ──
+  const [syncScroll, setSyncScroll] = useState(false)
+  const isSyncing = useRef(false)
+
+  useEffect(() => {
+    if (!syncScroll) return
+    const origEl = originalPanelRef.current
+    const transEl = translatedPanelRef.current
+    if (!origEl || !transEl) return
+
+    const syncFrom = (source, target) => () => {
+      if (isSyncing.current) return
+      isSyncing.current = true
+
+      // Find the topmost visible sentence in the source panel
+      const sentences = source.querySelectorAll('.sentence-block[data-sentence]')
+      const sourceTop = source.getBoundingClientRect().top
+      let topIdx = 0
+      let topOffset = 0
+
+      for (const s of sentences) {
+        const rect = s.getBoundingClientRect()
+        // First sentence whose bottom is below the panel top
+        if (rect.bottom > sourceTop) {
+          topIdx = parseInt(s.dataset.sentence, 10)
+          // How far this sentence is scrolled past the top (0 = just at top, 1 = fully scrolled past)
+          const sentHeight = rect.height || 1
+          topOffset = Math.max(0, (sourceTop - rect.top) / sentHeight)
+          break
+        }
+      }
+
+      // Find the matching sentence in the target panel
+      const match = target.querySelector(`.sentence-block[data-sentence="${topIdx}"]`)
+      if (match) {
+        const targetPanelTop = target.getBoundingClientRect().top
+        const matchRect = match.getBoundingClientRect()
+        const currentOffset = matchRect.top - targetPanelTop + target.scrollTop
+        target.scrollTop = currentOffset - target.clientTop + (topOffset * matchRect.height)
+      }
+
+      requestAnimationFrame(() => { isSyncing.current = false })
+    }
+
+    const onOrigScroll = syncFrom(origEl, transEl)
+    const onTransScroll = syncFrom(transEl, origEl)
+
+    origEl.addEventListener('scroll', onOrigScroll, { passive: true })
+    transEl.addEventListener('scroll', onTransScroll, { passive: true })
+
+    return () => {
+      origEl.removeEventListener('scroll', onOrigScroll)
+      transEl.removeEventListener('scroll', onTransScroll)
+    }
+  }, [syncScroll])
+
+  // ── Frequency highlighting (DOM-based to avoid re-rendering all spans) ──
+  useEffect(() => {
+    const freqClasses = ['freq-very-common', 'freq-common', 'freq-uncommon', 'freq-rare']
+    const origWords = document.querySelectorAll('.original-panel .hoverable-word[data-word]')
+    const transWords = document.querySelectorAll('.translated-panel .hoverable-word[data-word]')
+    if (!freqHighlight) {
+      origWords.forEach((el) => el.classList.remove(...freqClasses))
+      transWords.forEach((el) => el.classList.remove(...freqClasses))
+      return
+    }
+    origWords.forEach((el) => {
+      const w = el.dataset.word
+      el.classList.remove(...freqClasses)
+      const tier = wordFreqTiers[w]
+      if (tier) el.classList.add(tier)
+    })
+    transWords.forEach((el) => {
+      const w = el.dataset.word
+      el.classList.remove(...freqClasses)
+      const tier = translatedFreqTiers[w]
+      if (tier) el.classList.add(tier)
+    })
+  }, [freqHighlight, wordFreqTiers, translatedFreqTiers])
+
   // ── Click a word → translate tooltip + save button ──
   const handleWordClick = useCallback(async (e) => {
     const wordEl = e.target.closest('.hoverable-word')
@@ -187,9 +274,13 @@ function ResultView({ result, onBack }) {
     const rect = wordEl.getBoundingClientRect()
     const x = rect.left - containerRect.left + container.scrollLeft + rect.width / 2
     const y = rect.top - containerRect.top + container.scrollTop
+    // Flip tooltip below the word when it's near the top of the visible area
+    const visibleY = rect.top - containerRect.top
+    const flipped = visibleY < 80
+    const yPos = flipped ? y + rect.height : y
 
     setTooltipPanel(isTranslated ? 'translated' : 'original')
-    setTooltip({ word: displayWord, translated: null, x, y })
+    setTooltip({ word: displayWord, translated: null, x, y: yPos, flipped })
     setTooltipLoading(true)
 
     // Reverse direction when clicking in the translated panel
@@ -198,13 +289,27 @@ function ResultView({ result, onBack }) {
 
     try {
       const data = await translateWord(displayWord, toLang, fromLang)
-      setTooltip({ word: displayWord, translated: data.translated, x, y })
+      setTooltip((prev) => prev ? { ...prev, translated: data.translated } : null)
     } catch {
-      setTooltip({ word: displayWord, translated: '⚠ Failed', x, y })
+      setTooltip((prev) => prev ? { ...prev, translated: '⚠ Failed' } : null)
     } finally {
       setTooltipLoading(false)
     }
   }, [target_lang_code, source_lang_code])
+
+  const handlePanelClick = useCallback((e) => {
+    // In pin mode, clicking a sentence pins/unpins it
+    if (pinMode) {
+      const sentEl = e.target.closest('.sentence-block')
+      if (sentEl) {
+        const idx = parseInt(sentEl.dataset.sentence, 10)
+        if (!isNaN(idx)) togglePin(idx)
+      }
+      return
+    }
+    // Otherwise handle word click for tooltip
+    handleWordClick(e)
+  }, [pinMode, togglePin, handleWordClick])
 
   const closeTooltip = () => setTooltip(null)
 
@@ -236,11 +341,15 @@ function ResultView({ result, onBack }) {
       .forEach((s) => s.classList.add('sentence-highlight'))
   }, [])
 
-  const highlightMatchingWords = useCallback((panelSelector, targetWord) => {
+  const highlightMatchingWords = useCallback((panelSelector, targetWord, sentenceIdx) => {
     if (!targetWord) return
+    // Scope to the matching sentence in the other panel
+    const scope = sentenceIdx != null
+      ? `${panelSelector} .sentence-block[data-sentence="${sentenceIdx}"]`
+      : panelSelector
     const escapedWord = CSS.escape(targetWord)
     const exact = document.querySelectorAll(
-      `${panelSelector} [data-word="${escapedWord}"]`
+      `${scope} [data-word="${escapedWord}"]`
     )
     if (exact.length) {
       exact.forEach((el) => el.classList.add('word-cross-highlight'))
@@ -249,7 +358,7 @@ function ResultView({ result, onBack }) {
     const words = targetWord.split(/\s+/)
     words.forEach((w) => {
       if (w.length < 2) return
-      document.querySelectorAll(`${panelSelector} [data-word="${CSS.escape(w)}"]`)
+      document.querySelectorAll(`${scope} [data-word="${CSS.escape(w)}"]`)
         .forEach((el) => el.classList.add('word-cross-highlight'))
     })
   }, [])
@@ -261,9 +370,11 @@ function ResultView({ result, onBack }) {
     highlightSentence(wordEl)
     wordEl.classList.add('word-cross-highlight')
     const word = wordEl.dataset.word
+    const sentEl = wordEl.closest('.sentence-block')
+    const sentIdx = sentEl ? sentEl.dataset.sentence : null
     const translated = word_map?.[word]
     if (translated) {
-      highlightMatchingWords('.translated-panel', translated)
+      highlightMatchingWords('.translated-panel', translated, sentIdx)
     }
   }, [word_map, clearHighlights, highlightSentence, highlightMatchingWords])
 
@@ -274,10 +385,12 @@ function ResultView({ result, onBack }) {
     highlightSentence(wordEl)
     wordEl.classList.add('word-cross-highlight')
     const word = wordEl.dataset.word
+    const sentEl = wordEl.closest('.sentence-block')
+    const sentIdx = sentEl ? sentEl.dataset.sentence : null
     const originals = reverseMap[word]
     if (originals) {
       originals.forEach((orig) => {
-        highlightMatchingWords('.original-panel', orig)
+        highlightMatchingWords('.original-panel', orig, sentIdx)
       })
     }
   }, [reverseMap, clearHighlights, highlightSentence, highlightMatchingWords])
@@ -286,7 +399,7 @@ function ResultView({ result, onBack }) {
   const tooltipJsx = tooltip && (
     <>
       <div className="word-tooltip-backdrop" onClick={closeTooltip} />
-      <div className="word-tooltip" style={{ left: tooltip.x, top: tooltip.y }}>
+      <div className={`word-tooltip${tooltip.flipped ? ' word-tooltip-flipped' : ''}`} style={{ left: tooltip.x, top: tooltip.y }}>
         <button className="word-tooltip-close" onClick={closeTooltip}>
           <i className="fas fa-times"></i>
         </button>
@@ -322,23 +435,25 @@ function ResultView({ result, onBack }) {
     <>
       {/* ──── Header ──── */}
       <section className="result-header">
-        <h1>Translation Result</h1>
-        <p className="result-meta">
-          <span><i className="fas fa-file-pdf"></i> {filename}</span>
-          <span><i className="fas fa-arrow-right"></i></span>
-          <span><i className="fas fa-globe"></i> {target_lang}</span>
-        </p>
         <p className="result-hint">
-          <i className="fas fa-mouse-pointer"></i> Hover words to highlight &middot; Click for translation &middot; Right-click a sentence to pin it
+          {pinMode && <span style={{ color: 'var(--warning)', fontWeight: 600 }}> &middot; Pin mode ON — click any sentence to pin/unpin</span>}
         </p>
 
         <div className="result-toolbar">
           <div className="toolbar-actions">
             <button
+              className={`btn-notebook-toggle ${pinMode ? 'active' : ''}`}
+              onClick={() => setPinMode((v) => !v)}
+              title={pinMode ? 'Exit pin mode' : 'Enter pin mode — click sentences to pin them'}
+            >
+              <i className="fas fa-thumbtack"></i>
+              {pinMode ? 'Exit Pin Mode' : 'Pin Mode'}
+            </button>
+            <button
               className={`btn-notebook-toggle ${pinsOpen ? 'active' : ''}`}
               onClick={() => setPinsOpen((v) => !v)}
             >
-              <i className="fas fa-thumbtack"></i>
+              <i className="fas fa-list"></i>
               Pins
               {pinnedSentences.size > 0 && <span className="vocab-badge">{pinnedSentences.size}</span>}
             </button>
@@ -349,6 +464,22 @@ function ResultView({ result, onBack }) {
               <i className="fas fa-book"></i>
               Vocabulary
               {vocab.length > 0 && <span className="vocab-badge">{vocab.length}</span>}
+            </button>
+            <button
+              className={`btn-notebook-toggle ${syncScroll ? 'active' : ''}`}
+              onClick={() => setSyncScroll((v) => !v)}
+              title="Sync scroll between panels"
+            >
+              <i className="fas fa-arrows-alt-v"></i>
+              Sync Scroll
+            </button>
+            <button
+              className={`btn-notebook-toggle ${freqHighlight ? 'active' : ''}`}
+              onClick={() => setFreqHighlight((v) => !v)}
+              title="Highlight words by frequency"
+            >
+              <i className="fas fa-paint-brush"></i>
+              Word Freq
             </button>
             <button className="btn btn-outline" onClick={onBack}>
               <i className="fas fa-arrow-left"></i> Translate Another
@@ -407,6 +538,17 @@ function ResultView({ result, onBack }) {
         />
       )}
 
+      {/* ──── Frequency Legend ──── */}
+      {freqHighlight && (
+        <div className="freq-legend">
+          <span className="freq-legend-title"><i className="fas fa-paint-brush"></i> Word Frequency:</span>
+          <span className="freq-legend-item freq-very-common">Very Common</span>
+          <span className="freq-legend-item freq-common">Common</span>
+          <span className="freq-legend-item freq-uncommon">Uncommon</span>
+          <span className="freq-legend-item freq-rare">Rare</span>
+        </div>
+      )}
+
       {/* ════ SIDE-BY-SIDE VIEW WITH SENTENCE BORDERS ════ */}
       <section className="translation-container">
         <div className="text-panel original-panel">
@@ -415,12 +557,12 @@ function ResultView({ result, onBack }) {
             <CopyButton targetId="originalText" />
           </div>
           <div
-            className="panel-body interactive-text"
+            className={`panel-body interactive-text${pinMode ? ' pin-mode' : ''}`}
             id="originalText"
             ref={originalPanelRef}
             onMouseOver={handleOriginalHover}
             onMouseOut={clearHighlights}
-            onClick={handleWordClick}
+            onClick={handlePanelClick}
             onContextMenu={handleContextMenu}
           >
             {hasSentences
@@ -437,12 +579,12 @@ function ResultView({ result, onBack }) {
             <CopyButton targetId="translatedText" />
           </div>
           <div
-            className="panel-body interactive-text"
+            className={`panel-body interactive-text${pinMode ? ' pin-mode' : ''}`}
             id="translatedText"
             ref={translatedPanelRef}
             onMouseOver={handleTranslatedHover}
             onMouseOut={clearHighlights}
-            onClick={handleWordClick}
+            onClick={handlePanelClick}
             onContextMenu={handleContextMenu}
           >
             {hasSentences

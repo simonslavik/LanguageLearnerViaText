@@ -12,6 +12,7 @@ from app.database import get_db
 from app.services.auth import get_optional_user
 from app.services.pdf_parser import extract_text_from_pdf
 from langdetect import detect as detect_language
+from wordfreq import zipf_frequency
 
 from app.services.translator import (
     SUPPORTED_LANGUAGES,
@@ -70,6 +71,30 @@ async def translate(
         translated_text = " ".join(p["translated"] for p in sentence_pairs if p["translated"])
         word_map = build_word_map(original_text, target_lang)
 
+        # Build word frequency tiers using real language frequency data
+        import re as _re
+
+        def _build_freq_tiers(text, lang_code):
+            unique_words = set()
+            for w in _re.findall(r'[\w]+', text.lower()):
+                if len(w) >= 2:
+                    unique_words.add(w)
+            tiers = {}
+            for w in unique_words:
+                z = zipf_frequency(w, lang_code)
+                if z >= 5.5:
+                    tiers[w] = 'freq-very-common'
+                elif z >= 4.0:
+                    tiers[w] = 'freq-common'
+                elif z >= 2.5:
+                    tiers[w] = 'freq-uncommon'
+                else:
+                    tiers[w] = 'freq-rare'
+            return tiers
+
+        word_freq_tiers = _build_freq_tiers(original_text, source_lang_code)
+        translated_word_freq_tiers = _build_freq_tiers(translated_text, target_lang)
+
         result = {
             "filename": pdf_file.filename,
             "target_lang": SUPPORTED_LANGUAGES[target_lang],
@@ -78,6 +103,8 @@ async def translate(
             "original_text": original_text,
             "translated_text": translated_text,
             "word_map": word_map,
+            "word_freq_tiers": word_freq_tiers,
+            "translated_word_freq_tiers": translated_word_freq_tiers,
             "sentence_pairs": sentence_pairs,
         }
 

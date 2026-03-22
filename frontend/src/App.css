@@ -389,7 +389,7 @@
   word-wrap: break-word;
   font-size: 1rem;
   line-height: 1.9;
-  max-height: 70vh;
+  max-height: 85vh;
   overflow-y: auto;
   letter-spacing: 0.01em;
   contain: layout style paint;
@@ -421,6 +421,56 @@
   background: rgba(79, 70, 229, 0.22);
   color: var(--primary-dark);
 }
+
+/* ── Word Frequency Highlighting (underline only) ── */
+.freq-very-common {
+  border-bottom: 2px solid #22c55e;
+}
+
+.freq-common {
+  border-bottom: 2px solid #3b82f6;
+}
+
+.freq-uncommon {
+  border-bottom: 2px solid #f59e0b;
+}
+
+.freq-rare {
+  border-bottom: 2px solid #ef4444;
+}
+
+/* Frequency legend bar */
+.freq-legend {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem 1.25rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin-bottom: 1rem;
+  font-size: 0.82rem;
+  flex-wrap: wrap;
+}
+
+.freq-legend-title {
+  font-weight: 600;
+  color: var(--text);
+  margin-right: 0.25rem;
+}
+
+.freq-legend-item {
+  padding: 2px 10px;
+  border-radius: 4px;
+  font-weight: 500;
+  font-size: 0.8rem;
+  border-bottom: 2px solid transparent;
+}
+
+.freq-legend-item.freq-very-common { color: #15803d; border-bottom-color: #22c55e; }
+.freq-legend-item.freq-common { color: #2563eb; border-bottom-color: #3b82f6; }
+.freq-legend-item.freq-uncommon { color: #d97706; border-bottom-color: #f59e0b; }
+.freq-legend-item.freq-rare { color: #dc2626; border-bottom-color: #ef4444; }
 
 /* Instant same-panel sentence highlight via CSS :has() */
 .sentence-block:has(.hoverable-word:hover) {
@@ -518,6 +568,17 @@
 .sentence-block.pinned {
   background: rgba(251, 191, 36, 0.12);
   box-shadow: 0 2px 0 #f59e0b;
+}
+
+/* ── Pin mode: visual feedback ── */
+.panel-body.pin-mode {
+  cursor: crosshair;
+}
+
+.panel-body.pin-mode .sentence-block:hover {
+  outline: 2px dashed #f59e0b;
+  outline-offset: 1px;
+  border-radius: 3px;
 }
 
 /* ── Sentence flash animation for scroll-to ── */
@@ -858,6 +919,10 @@
   z-index: 200;
   animation: tooltipFadeIn 0.15s ease-out;
   text-align: center;
+}
+
+.word-tooltip-flipped {
+  transform: translate(-50%, 0) translateY(10px);
 }
 
 .word-tooltip-close {
