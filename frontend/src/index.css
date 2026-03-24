@@ -13,16 +13,38 @@
   --primary-light: #818cf8;
   --bg: #f8fafc;
   --surface: #ffffff;
+  --surface-alt: #f1f5f9;
   --text: #1e293b;
   --text-muted: #64748b;
   --border: #e2e8f0;
   --success: #22c55e;
   --error: #ef4444;
+  --warning: #f59e0b;
   --radius: 12px;
   --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.08);
   --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.1);
   --shadow-lg: 0 10px 30px rgba(0, 0, 0, 0.12);
   --transition: 0.2s ease;
+  color-scheme: light;
+}
+
+[data-theme="dark"] {
+  --primary: #818cf8;
+  --primary-dark: #a5b4fc;
+  --primary-light: #6366f1;
+  --bg: #0f172a;
+  --surface: #1e293b;
+  --surface-alt: #334155;
+  --text: #f1f5f9;
+  --text-muted: #94a3b8;
+  --border: #334155;
+  --success: #4ade80;
+  --error: #f87171;
+  --warning: #fbbf24;
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 10px 30px rgba(0, 0, 0, 0.5);
+  color-scheme: dark;
 }
 
 html {

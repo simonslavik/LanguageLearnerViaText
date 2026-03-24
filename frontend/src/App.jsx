@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import Navbar from './components/Navbar'
 import UploadForm from './components/UploadForm'
 import ResultView from './components/ResultView'
@@ -9,6 +9,13 @@ import { fetchMe } from './api'
 import './App.css'
 
 const RESULT_KEY = 'translator_last_result'
+const THEME_KEY = 'translator_theme'
+
+function getInitialTheme() {
+  const saved = localStorage.getItem(THEME_KEY)
+  if (saved === 'dark' || saved === 'light') return saved
+  return window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+}
 
 function loadResult() {
   try {
@@ -23,6 +30,17 @@ function App() {
   const [user, setUser] = useState(null)
   const [view, setView] = useState('home') // home | auth | history
   const [authChecked, setAuthChecked] = useState(false)
+  const [theme, setTheme] = useState(getInitialTheme)
+
+  // Apply theme to <html> element
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme)
+    localStorage.setItem(THEME_KEY, theme)
+  }, [theme])
+
+  const toggleTheme = useCallback(() => {
+    setTheme((t) => (t === 'dark' ? 'light' : 'dark'))
+  }, [])
 
   // Check for existing token on mount
   useEffect(() => {
@@ -88,6 +106,8 @@ function App() {
         onLoginClick={() => setView('auth')}
         onHistoryClick={() => setView('history')}
         onLogout={handleLogout}
+        theme={theme}
+        onToggleTheme={toggleTheme}
       />
       <main className="container">
         {renderContent()}
