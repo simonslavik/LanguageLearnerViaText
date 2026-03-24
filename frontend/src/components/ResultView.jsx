@@ -92,6 +92,8 @@ function ResultView({ result, onBack }) {
     word_map,
     word_freq_tiers,
     translated_word_freq_tiers,
+    original_cefr,
+    translated_cefr,
     sentence_pairs,
   } = result
 
@@ -496,6 +498,28 @@ function ResultView({ result, onBack }) {
     <>
       {/* ──── Header ──── */}
       <section className="result-header">
+        {/* CEFR Difficulty Badges */}
+        {(original_cefr || translated_cefr) && (
+          <div className="cefr-bar">
+            {original_cefr && (
+              <div className={`cefr-badge cefr-${original_cefr.level?.toLowerCase()}`}>
+                <span className="cefr-level">{original_cefr.level}</span>
+                <span className="cefr-desc">
+                  Original &middot; avg&nbsp;freq&nbsp;{original_cefr.score} &middot; {original_cefr.rare_pct}% rare/uncommon
+                </span>
+              </div>
+            )}
+            {translated_cefr && (
+              <div className={`cefr-badge cefr-${translated_cefr.level?.toLowerCase()}`}>
+                <span className="cefr-level">{translated_cefr.level}</span>
+                <span className="cefr-desc">
+                  Translated &middot; avg&nbsp;freq&nbsp;{translated_cefr.score} &middot; {translated_cefr.rare_pct}% rare/uncommon
+                </span>
+              </div>
+            )}
+          </div>
+        )}
+
         <p className="result-hint">
           {pinMode && <span style={{ color: 'var(--warning)', fontWeight: 600 }}> &middot; Pin mode ON — click any sentence to pin/unpin</span>}
         </p>

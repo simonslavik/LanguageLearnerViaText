@@ -95,6 +95,49 @@ async def translate(
         word_freq_tiers = _build_freq_tiers(original_text, source_lang_code)
         translated_word_freq_tiers = _build_freq_tiers(translated_text, target_lang)
 
+        # Compute CEFR difficulty estimate from word frequency distribution
+        def _compute_cefr(text, lang_code):
+            words = [w for w in _re.findall(r'[\w]+', text.lower()) if len(w) >= 2]
+            if not words:
+                return {"level": "A1", "score": 0, "detail": {}}
+            freqs = [zipf_frequency(w, lang_code) for w in set(words)]
+            avg_freq = sum(freqs) / len(freqs) if freqs else 0
+            # Count distribution
+            buckets = {"very_common": 0, "common": 0, "uncommon": 0, "rare": 0}
+            for z in freqs:
+                if z >= 5.5:
+                    buckets["very_common"] += 1
+                elif z >= 4.0:
+                    buckets["common"] += 1
+                elif z >= 2.5:
+                    buckets["uncommon"] += 1
+                else:
+                    buckets["rare"] += 1
+            total = len(freqs)
+            rare_pct = (buckets["uncommon"] + buckets["rare"]) / total if total else 0
+            # Map average frequency + rare word percentage to CEFR
+            if avg_freq >= 5.0 and rare_pct < 0.15:
+                level = "A1"
+            elif avg_freq >= 4.5 and rare_pct < 0.25:
+                level = "A2"
+            elif avg_freq >= 4.0 and rare_pct < 0.35:
+                level = "B1"
+            elif avg_freq >= 3.5 and rare_pct < 0.50:
+                level = "B2"
+            elif avg_freq >= 3.0:
+                level = "C1"
+            else:
+                level = "C2"
+            return {
+                "level": level,
+                "score": round(avg_freq, 2),
+                "rare_pct": round(rare_pct * 100, 1),
+                "detail": {k: round(v / total * 100, 1) if total else 0 for k, v in buckets.items()},
+            }
+
+        original_cefr = _compute_cefr(original_text, source_lang_code)
+        translated_cefr = _compute_cefr(translated_text, target_lang)
+
         result = {
             "filename": pdf_file.filename,
             "target_lang": SUPPORTED_LANGUAGES[target_lang],
@@ -105,6 +148,8 @@ async def translate(
             "word_map": word_map,
             "word_freq_tiers": word_freq_tiers,
             "translated_word_freq_tiers": translated_word_freq_tiers,
+            "original_cefr": original_cefr,
+            "translated_cefr": translated_cefr,
             "sentence_pairs": sentence_pairs,
         }
 
