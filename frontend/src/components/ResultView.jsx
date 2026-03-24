@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback, useMemo, useEffect, memo } from 'react'
 import { translateWord } from '../api'
 import VocabularyNotebook from './VocabularyNotebook'
+import FlashcardQuiz from './FlashcardQuiz'
 
 // ─── localStorage helpers ───────────────────────────────────────────────
 const VOCAB_KEY = 'translator_vocabulary'
@@ -105,6 +106,28 @@ function ResultView({ result, onBack }) {
   )
   const hasSentences = originalSentences.length > 0
 
+  // ── Find context sentences for a word ──
+  const findContextSentences = useCallback((word, isTranslatedPanel) => {
+    if (!sentence_pairs || !word) return []
+    const needle = word.toLowerCase()
+    const matches = []
+    for (let i = 0; i < sentence_pairs.length && matches.length < 3; i++) {
+      const src = isTranslatedPanel
+        ? (sentence_pairs[i].translated || '')
+        : (sentence_pairs[i].original || '')
+      // Match as a whole word (surrounded by non-letter chars or boundaries)
+      const re = new RegExp(`(?<![\\p{L}])${needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\p{L}])`, 'iu')
+      if (re.test(src)) {
+        matches.push({
+          original: sentence_pairs[i].original || '',
+          translated: sentence_pairs[i].translated || '',
+          index: i,
+        })
+      }
+    }
+    return matches
+  }, [sentence_pairs])
+
   // ── Word Frequency Tiers (from backend, based on real language frequency data) ──
   const wordFreqTiers = useMemo(() => word_freq_tiers || {}, [word_freq_tiers])
   const translatedFreqTiers = useMemo(() => translated_word_freq_tiers || {}, [translated_word_freq_tiers])
@@ -154,6 +177,7 @@ function ResultView({ result, onBack }) {
   // ── Vocabulary Notebook ──
   const [vocab, setVocab] = useState(loadVocab)
   const [notebookOpen, setNotebookOpen] = useState(false)
+  const [quizOpen, setQuizOpen] = useState(false)
 
   useEffect(() => { saveVocab(vocab) }, [vocab])
 
@@ -176,7 +200,6 @@ function ResultView({ result, onBack }) {
   const translatedPanelRef = useRef(null)
   const [tooltip, setTooltip] = useState(null)
   const [tooltipLoading, setTooltipLoading] = useState(false)
-  const [tooltipPanel, setTooltipPanel] = useState('original') // which panel the tooltip is in
 
   // ── Synchronized scrolling (sentence-aligned) ──
   const [syncScroll, setSyncScroll] = useState(false)
@@ -270,18 +293,17 @@ function ResultView({ result, onBack }) {
 
     const container = wordEl.closest('.panel-body') || originalPanelRef.current
     const isTranslated = container === translatedPanelRef.current
-    const containerRect = container.getBoundingClientRect()
     const rect = wordEl.getBoundingClientRect()
-    const x = rect.left - containerRect.left + container.scrollLeft + rect.width / 2
-    const y = rect.top - containerRect.top + container.scrollTop
-    // Flip tooltip below the word when it's near the top of the visible area
-    const visibleY = rect.top - containerRect.top
-    const flipped = visibleY < 80
-    const yPos = flipped ? y + rect.height : y
+    const x = rect.left + rect.width / 2
+    // Flip tooltip below the word when it's near the top of the viewport
+    const flipped = rect.top < 120
+    const yPos = flipped ? rect.bottom : rect.top
 
-    setTooltipPanel(isTranslated ? 'translated' : 'original')
-    setTooltip({ word: displayWord, translated: null, x, y: yPos, flipped })
+    const contextExamples = findContextSentences(normalized, isTranslated)
+
+    setTooltip({ word: displayWord, translated: null, x, y: yPos, flipped, contextExamples })
     setTooltipLoading(true)
+    setContextOpen(false)
 
     // Reverse direction when clicking in the translated panel
     const toLang = isTranslated ? (source_lang_code || 'en') : target_lang_code
@@ -295,7 +317,7 @@ function ResultView({ result, onBack }) {
     } finally {
       setTooltipLoading(false)
     }
-  }, [target_lang_code, source_lang_code])
+  }, [target_lang_code, source_lang_code, findContextSentences])
 
   const handlePanelClick = useCallback((e) => {
     // In pin mode, clicking a sentence pins/unpins it
@@ -396,10 +418,31 @@ function ResultView({ result, onBack }) {
   }, [reverseMap, clearHighlights, highlightSentence, highlightMatchingWords])
 
   // ── Tooltip JSX ──
+  const [contextOpen, setContextOpen] = useState(false)
+
+  /** Highlight occurrences of `word` inside `text` using <mark> */
+  const highlightWordInText = useCallback((text, word) => {
+    if (!word || !text) return text
+    try {
+      const escaped = word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      const re = new RegExp(`(${escaped})`, 'gi')
+      const parts = text.split(re)
+      if (parts.length === 1) return text
+      return parts.map((part, i) =>
+        re.test(part) ? <mark key={i} className="context-highlight">{part}</mark> : part
+      )
+    } catch {
+      return text
+    }
+  }, [])
+
   const tooltipJsx = tooltip && (
     <>
       <div className="word-tooltip-backdrop" onClick={closeTooltip} />
-      <div className={`word-tooltip${tooltip.flipped ? ' word-tooltip-flipped' : ''}`} style={{ left: tooltip.x, top: tooltip.y }}>
+      <div
+        className={`word-tooltip word-tooltip-fixed${tooltip.flipped ? ' word-tooltip-flipped' : ''}`}
+        style={{ left: tooltip.x, top: tooltip.y }}
+      >
         <button className="word-tooltip-close" onClick={closeTooltip}>
           <i className="fas fa-times"></i>
         </button>
@@ -422,6 +465,24 @@ function ResultView({ result, onBack }) {
               <i className="fas fa-plus"></i> Save
             </button>
           </>
+        )}
+        {tooltip.contextExamples && tooltip.contextExamples.length > 0 && (
+          <div className="word-tooltip-context">
+            <button
+              className="word-tooltip-context-toggle"
+              onClick={(e) => { e.stopPropagation(); setContextOpen((v) => !v) }}
+            >
+              <i className={`fas fa-chevron-${contextOpen ? 'up' : 'down'}`}></i>
+              <i className="fas fa-quote-left"></i>
+              {contextOpen ? 'Hide' : 'Show'} examples ({tooltip.contextExamples.length})
+            </button>
+            {contextOpen && tooltip.contextExamples.map((ex) => (
+              <div key={ex.index} className="word-tooltip-context-item">
+                <div className="context-original">{highlightWordInText(ex.original, tooltip.word)}</div>
+                <div className="context-translated">{highlightWordInText(ex.translated, tooltip.translated)}</div>
+              </div>
+            ))}
+          </div>
         )}
       </div>
     </>
@@ -463,6 +524,14 @@ function ResultView({ result, onBack }) {
             >
               <i className="fas fa-book"></i>
               Vocabulary
+              {vocab.length > 0 && <span className="vocab-badge">{vocab.length}</span>}
+            </button>
+            <button
+              className={`btn-notebook-toggle ${quizOpen ? 'active' : ''}`}
+              onClick={() => setQuizOpen((v) => !v)}
+            >
+              <i className="fas fa-brain"></i>
+              Quiz
               {vocab.length > 0 && <span className="vocab-badge">{vocab.length}</span>}
             </button>
             <button
@@ -528,6 +597,14 @@ function ResultView({ result, onBack }) {
         </div>
       )}
 
+      {/* ──── Flashcard Quiz Drawer ──── */}
+      {quizOpen && (
+        <FlashcardQuiz
+          vocab={vocab}
+          onClose={() => setQuizOpen(false)}
+        />
+      )}
+
       {/* ──── Vocabulary Notebook Drawer ──── */}
       {notebookOpen && (
         <VocabularyNotebook
@@ -569,7 +646,6 @@ function ResultView({ result, onBack }) {
               ? <SentenceBlockRenderer pairs={originalSentences} pinnedSet={pinnedSentences} />
               : <WordRenderer text={original_text} />
             }
-            {tooltipPanel === 'original' && tooltipJsx}
           </div>
         </div>
 
@@ -591,10 +667,12 @@ function ResultView({ result, onBack }) {
               ? <SentenceBlockRenderer pairs={translatedSentences} pinnedSet={pinnedSentences} />
               : <WordRenderer text={translated_text} />
             }
-            {tooltipPanel === 'translated' && tooltipJsx}
           </div>
         </div>
       </section>
+
+      {/* Tooltip rendered at root level to avoid panel overflow clipping */}
+      {tooltipJsx}
     </>
   )
 }
