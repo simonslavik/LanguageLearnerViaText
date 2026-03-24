@@ -2,10 +2,14 @@
 
 import os
 import uuid
+import tempfile
 from datetime import datetime
 
 from bson import ObjectId
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi.responses import FileResponse as FastAPIFileResponse
+from pydantic import BaseModel
+from typing import List, Optional
 
 from app.config import settings
 from app.database import get_db
@@ -204,3 +208,89 @@ async def translate_word(
         }
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Translation failed: {exc}")
+
+
+# ── Anki Export ──────────────────────────────────────────────────────────
+
+class VocabEntry(BaseModel):
+    word: str
+    translated: str
+    targetLang: Optional[str] = ""
+    added: Optional[int] = 0
+
+
+class AnkiExportRequest(BaseModel):
+    vocab: List[VocabEntry]
+    deck_name: Optional[str] = "PDF Translator Vocabulary"
+
+
+@router.post("/export-anki")
+async def export_anki(payload: AnkiExportRequest):
+    """Generate an Anki .apkg deck from the user's vocabulary list."""
+    import genanki
+    import hashlib
+
+    if not payload.vocab:
+        raise HTTPException(status_code=400, detail="No vocabulary to export.")
+
+    # Deterministic model & deck IDs derived from deck name (stable across exports)
+    seed = int(hashlib.sha256(payload.deck_name.encode()).hexdigest()[:8], 16)
+    model_id = 1607392319 + (seed % 100000)
+    deck_id = 2059400110 + (seed % 100000)
+
+    model = genanki.Model(
+        model_id,
+        "PDF Translator Card",
+        fields=[
+            {"name": "Front"},
+            {"name": "Back"},
+            {"name": "Language"},
+        ],
+        templates=[
+            {
+                "name": "Card 1",
+                "qfmt": (
+                    '<div style="font-family: system-ui, sans-serif; text-align: center;">'
+                    '<div style="font-size: 28px; font-weight: 700; margin-bottom: 12px;">{{Front}}</div>'
+                    '<div style="font-size: 13px; color: #888;">{{Language}}</div>'
+                    "</div>"
+                ),
+                "afmt": (
+                    '<div style="font-family: system-ui, sans-serif; text-align: center;">'
+                    '<div style="font-size: 28px; font-weight: 700; margin-bottom: 12px;">{{Front}}</div>'
+                    "<hr id=answer>"
+                    '<div style="font-size: 26px; color: #2563eb; font-weight: 600;">{{Back}}</div>'
+                    '<div style="font-size: 13px; color: #888; margin-top: 8px;">{{Language}}</div>'
+                    "</div>"
+                ),
+            },
+        ],
+        css=(
+            ".card { font-family: system-ui, -apple-system, sans-serif; "
+            "background: #fff; padding: 20px; }"
+        ),
+    )
+
+    deck = genanki.Deck(deck_id, payload.deck_name)
+
+    for entry in payload.vocab:
+        note = genanki.Note(
+            model=model,
+            fields=[entry.word, entry.translated, entry.targetLang or ""],
+        )
+        deck.add_note(note)
+
+    # Write to a temp file and stream it back
+    tmp = tempfile.NamedTemporaryFile(suffix=".apkg", delete=False)
+    try:
+        genanki.Package(deck).write_to_file(tmp.name)
+        return FastAPIFileResponse(
+            path=tmp.name,
+            filename=f"{payload.deck_name}.apkg",
+            media_type="application/octet-stream",
+            background=None,
+        )
+    except Exception as exc:
+        if os.path.exists(tmp.name):
+            os.remove(tmp.name)
+        raise HTTPException(status_code=500, detail=f"Anki export failed: {exc}")

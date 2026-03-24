@@ -204,7 +204,7 @@ function ResultView({ result, onBack }) {
   const [tooltipLoading, setTooltipLoading] = useState(false)
 
   // ── Synchronized scrolling (sentence-aligned) ──
-  const [syncScroll, setSyncScroll] = useState(false)
+  const [syncScroll, setSyncScroll] = useState(true)
   const isSyncing = useRef(false)
 
   useEffect(() => {
@@ -348,76 +348,98 @@ function ResultView({ result, onBack }) {
     return rm
   }, [word_map])
 
-  // ── Cross-panel word + sentence highlight (same approach as pre-pin version) ──
+  // ── Cross-panel word + sentence highlight ──
+  // Track highlighted elements to avoid expensive full-DOM scans on every hover
+  const highlightedEls = useRef([])
+  const lastHoveredWord = useRef(null)
+
   const clearHighlights = useCallback(() => {
-    document.querySelectorAll('.word-cross-highlight')
-      .forEach((el) => el.classList.remove('word-cross-highlight'))
-    document.querySelectorAll('.sentence-highlight')
-      .forEach((el) => el.classList.remove('sentence-highlight'))
+    const els = highlightedEls.current
+    for (let i = els.length - 1; i >= 0; i--) {
+      const [el, cls] = els[i]
+      el.classList.remove(cls)
+    }
+    highlightedEls.current = []
+  }, [])
+
+  const handleMouseOut = useCallback(() => {
+    lastHoveredWord.current = null
+    clearHighlights()
+  }, [clearHighlights])
+
+  const addHighlight = useCallback((el, cls) => {
+    el.classList.add(cls)
+    highlightedEls.current.push([el, cls])
   }, [])
 
   const highlightSentence = useCallback((el) => {
     const sentenceEl = el.closest('.sentence-block')
     if (!sentenceEl) return
     const idx = sentenceEl.dataset.sentence
-    sentenceEl.classList.add('sentence-highlight')
-    document.querySelectorAll(`.sentence-block[data-sentence="${idx}"]`)
-      .forEach((s) => s.classList.add('sentence-highlight'))
-  }, [])
+    addHighlight(sentenceEl, 'sentence-highlight')
+    // Scope to the two panel bodies instead of full document
+    const panels = [originalPanelRef.current, translatedPanelRef.current]
+    for (const panel of panels) {
+      if (!panel) continue
+      const match = panel.querySelector(`.sentence-block[data-sentence="${idx}"]`)
+      if (match && match !== sentenceEl) addHighlight(match, 'sentence-highlight')
+    }
+  }, [addHighlight])
 
-  const highlightMatchingWords = useCallback((panelSelector, targetWord, sentenceIdx) => {
-    if (!targetWord) return
+  const highlightMatchingWords = useCallback((panelRef, targetWord, sentenceIdx) => {
+    if (!targetWord || !panelRef.current) return
     // Scope to the matching sentence in the other panel
-    const scope = sentenceIdx != null
-      ? `${panelSelector} .sentence-block[data-sentence="${sentenceIdx}"]`
-      : panelSelector
+    const root = sentenceIdx != null
+      ? panelRef.current.querySelector(`.sentence-block[data-sentence="${sentenceIdx}"]`)
+      : panelRef.current
+    if (!root) return
     const escapedWord = CSS.escape(targetWord)
-    const exact = document.querySelectorAll(
-      `${scope} [data-word="${escapedWord}"]`
-    )
+    const exact = root.querySelectorAll(`[data-word="${escapedWord}"]`)
     if (exact.length) {
-      exact.forEach((el) => el.classList.add('word-cross-highlight'))
+      exact.forEach((el) => addHighlight(el, 'word-cross-highlight'))
       return
     }
     const words = targetWord.split(/\s+/)
     words.forEach((w) => {
       if (w.length < 2) return
-      document.querySelectorAll(`${scope} [data-word="${CSS.escape(w)}"]`)
-        .forEach((el) => el.classList.add('word-cross-highlight'))
+      root.querySelectorAll(`[data-word="${CSS.escape(w)}"]`)
+        .forEach((el) => addHighlight(el, 'word-cross-highlight'))
     })
-  }, [])
+  }, [addHighlight])
 
   const handleOriginalHover = useCallback((e) => {
     const wordEl = e.target.closest('.hoverable-word')
-    if (!wordEl) return
+    if (!wordEl || wordEl === lastHoveredWord.current) return
+    lastHoveredWord.current = wordEl
     clearHighlights()
     highlightSentence(wordEl)
-    wordEl.classList.add('word-cross-highlight')
+    addHighlight(wordEl, 'word-cross-highlight')
     const word = wordEl.dataset.word
     const sentEl = wordEl.closest('.sentence-block')
     const sentIdx = sentEl ? sentEl.dataset.sentence : null
     const translated = word_map?.[word]
     if (translated) {
-      highlightMatchingWords('.translated-panel', translated, sentIdx)
+      highlightMatchingWords(translatedPanelRef, translated, sentIdx)
     }
-  }, [word_map, clearHighlights, highlightSentence, highlightMatchingWords])
+  }, [word_map, clearHighlights, highlightSentence, highlightMatchingWords, addHighlight])
 
   const handleTranslatedHover = useCallback((e) => {
     const wordEl = e.target.closest('.hoverable-word')
-    if (!wordEl) return
+    if (!wordEl || wordEl === lastHoveredWord.current) return
+    lastHoveredWord.current = wordEl
     clearHighlights()
     highlightSentence(wordEl)
-    wordEl.classList.add('word-cross-highlight')
+    addHighlight(wordEl, 'word-cross-highlight')
     const word = wordEl.dataset.word
     const sentEl = wordEl.closest('.sentence-block')
     const sentIdx = sentEl ? sentEl.dataset.sentence : null
     const originals = reverseMap[word]
     if (originals) {
       originals.forEach((orig) => {
-        highlightMatchingWords('.original-panel', orig, sentIdx)
+        highlightMatchingWords(originalPanelRef, orig, sentIdx)
       })
     }
-  }, [reverseMap, clearHighlights, highlightSentence, highlightMatchingWords])
+  }, [reverseMap, clearHighlights, highlightSentence, highlightMatchingWords, addHighlight])
 
   // ── Tooltip JSX ──
   const [contextOpen, setContextOpen] = useState(false)
@@ -662,7 +684,7 @@ function ResultView({ result, onBack }) {
             id="originalText"
             ref={originalPanelRef}
             onMouseOver={handleOriginalHover}
-            onMouseOut={clearHighlights}
+            onMouseLeave={handleMouseOut}
             onClick={handlePanelClick}
             onContextMenu={handleContextMenu}
           >
@@ -683,7 +705,7 @@ function ResultView({ result, onBack }) {
             id="translatedText"
             ref={translatedPanelRef}
             onMouseOver={handleTranslatedHover}
-            onMouseOut={clearHighlights}
+            onMouseLeave={handleMouseOut}
             onClick={handlePanelClick}
             onContextMenu={handleContextMenu}
           >

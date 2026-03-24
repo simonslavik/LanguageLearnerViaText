@@ -116,3 +116,23 @@ export async function clearHistory() {
   if (!res.ok) throw new Error('Failed to clear history')
   return res.json()
 }
+
+// ── Anki Export ──────────────────────────────────────────────────────────
+export async function exportAnki(vocab, deckName = 'PDF Translator Vocabulary') {
+  const res = await fetch(`${API_BASE}/export-anki`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ vocab, deck_name: deckName }),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.detail || 'Anki export failed')
+  }
+  const blob = await res.blob()
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `${deckName}.apkg`
+  a.click()
+  URL.revokeObjectURL(url)
+}

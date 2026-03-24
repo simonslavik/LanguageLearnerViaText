@@ -461,21 +461,25 @@
   color: var(--primary-dark);
 }
 
-/* ── Word Frequency Highlighting (underline only) ── */
+/* ── Word Frequency Highlighting (underline only, text-decoration avoids layout) ── */
 .freq-very-common {
-  border-bottom: 2px solid #22c55e;
+  text-decoration: underline 2px #22c55e;
+  text-underline-offset: 2px;
 }
 
 .freq-common {
-  border-bottom: 2px solid #3b82f6;
+  text-decoration: underline 2px #3b82f6;
+  text-underline-offset: 2px;
 }
 
 .freq-uncommon {
-  border-bottom: 2px solid #f59e0b;
+  text-decoration: underline 2px #f59e0b;
+  text-underline-offset: 2px;
 }
 
 .freq-rare {
-  border-bottom: 2px solid #ef4444;
+  text-decoration: underline 2px #ef4444;
+  text-underline-offset: 2px;
 }
 
 /* Frequency legend bar */
@@ -503,18 +507,12 @@
   border-radius: 4px;
   font-weight: 500;
   font-size: 0.8rem;
-  border-bottom: 2px solid transparent;
 }
 
-.freq-legend-item.freq-very-common { color: #15803d; border-bottom-color: #22c55e; }
-.freq-legend-item.freq-common { color: #2563eb; border-bottom-color: #3b82f6; }
-.freq-legend-item.freq-uncommon { color: #d97706; border-bottom-color: #f59e0b; }
-.freq-legend-item.freq-rare { color: #dc2626; border-bottom-color: #ef4444; }
-
-/* Instant same-panel sentence highlight via CSS :has() */
-.sentence-block:has(.hoverable-word:hover) {
-  background: rgba(79, 70, 229, 0.08);
-}
+.freq-legend-item.freq-very-common { color: #15803d; text-decoration: underline 2px #22c55e; text-underline-offset: 2px; }
+.freq-legend-item.freq-common { color: #2563eb; text-decoration: underline 2px #3b82f6; text-underline-offset: 2px; }
+.freq-legend-item.freq-uncommon { color: #d97706; text-decoration: underline 2px #f59e0b; text-underline-offset: 2px; }
+.freq-legend-item.freq-rare { color: #dc2626; text-decoration: underline 2px #ef4444; text-underline-offset: 2px; }
 
 /* Cross-panel highlight applied via JS classList */
 .word-cross-highlight {
@@ -907,6 +905,22 @@
 .btn-danger:hover {
   color: var(--error);
   border-color: var(--error);
+}
+
+.btn-anki {
+  color: #2563eb;
+  border-color: #93c5fd;
+}
+
+.btn-anki:hover:not(:disabled) {
+  background: #eff6ff;
+  color: #1d4ed8;
+  border-color: #2563eb;
+}
+
+.btn-anki:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 .notebook-empty {

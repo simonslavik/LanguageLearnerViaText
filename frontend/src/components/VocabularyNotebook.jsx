@@ -1,7 +1,9 @@
 import { useState } from 'react'
+import { exportAnki } from '../api'
 
 function VocabularyNotebook({ vocab, onRemove, onClear, onClose }) {
   const [filter, setFilter] = useState('')
+  const [ankiLoading, setAnkiLoading] = useState(false)
 
   const filtered = filter
     ? vocab.filter(
@@ -27,6 +29,17 @@ function VocabularyNotebook({ vocab, onRemove, onClear, onClose }) {
     URL.revokeObjectURL(url)
   }
 
+  const handleAnkiExport = async () => {
+    setAnkiLoading(true)
+    try {
+      await exportAnki(vocab)
+    } catch (err) {
+      alert('Anki export failed: ' + err.message)
+    } finally {
+      setAnkiLoading(false)
+    }
+  }
+
   return (
     <section className="notebook-drawer">
       <div className="notebook-header">
@@ -35,7 +48,17 @@ function VocabularyNotebook({ vocab, onRemove, onClear, onClose }) {
           {vocab.length > 0 && (
             <>
               <button className="btn-sm" onClick={exportCsv} title="Export as CSV">
-                <i className="fas fa-download"></i> Export
+                <i className="fas fa-file-csv"></i> CSV
+              </button>
+              <button
+                className="btn-sm btn-anki"
+                onClick={handleAnkiExport}
+                disabled={ankiLoading}
+                title="Export as Anki deck (.apkg)"
+              >
+                {ankiLoading
+                  ? <><span className="spinner-sm"></span> Anki</>
+                  : <><i className="fas fa-graduation-cap"></i> Anki</>}
               </button>
               <button className="btn-sm btn-danger" onClick={onClear} title="Clear all">
                 <i className="fas fa-trash"></i> Clear
