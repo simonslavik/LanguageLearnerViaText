@@ -64,6 +64,20 @@ function UploadForm({ onResult }) {
 
   return (
     <>
+      {/* Full-screen translation overlay */}
+      {loading && (
+        <div className="translate-overlay">
+          <div className="translate-overlay-card">
+            <div className="translate-spinner"></div>
+            <h2>Translating your PDF…</h2>
+            <p>This may take a moment depending on the file size.</p>
+            <div className="translate-dots">
+              <span></span><span></span><span></span>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Hero */}
       <section className="hero">
         <h1>Translate Your PDF Documents</h1>
@@ -135,16 +149,7 @@ function UploadForm({ onResult }) {
 
           {/* Submit */}
           <button type="submit" className="btn btn-primary" disabled={loading}>
-            {loading ? (
-              <>
-                <span className="spinner"></span>
-                <span>Translating…</span>
-              </>
-            ) : (
-              <>
-                <i className="fas fa-language"></i> Translate
-              </>
-            )}
+            <i className="fas fa-language"></i> Translate
           </button>
         </form>
       </section>

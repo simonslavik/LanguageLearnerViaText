@@ -1,11 +1,55 @@
 services:
+
+  # ── MongoDB ────────────────────────────────────────────────────────────────
   mongo:
     image: mongo:7
     container_name: mongo-translator
-    ports:
-      - "27017:27017"
+    restart: unless-stopped
     volumes:
       - mongo-data:/data/db
+    # Internal network only — not exposed to the host in staging
+    expose:
+      - "27017"
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── FastAPI backend ────────────────────────────────────────────────────────
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: backend-translator
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Override MONGO_URL so the backend reaches the mongo container by name
+      MONGO_URL: mongodb://mongo:27017
+    volumes:
+      # Persist uploaded files across restarts
+      - uploads-data:/app/uploads
+    expose:
+      - "5000"
+    depends_on:
+      mongo:
+        condition: service_healthy
+
+  # ── React frontend (Nginx) ─────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_GOOGLE_CLIENT_ID: ${VITE_GOOGLE_CLIENT_ID:-}
+    container_name: frontend-translator
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
 
 volumes:
   mongo-data:
+  uploads-data:

@@ -3,6 +3,8 @@ import { translateWord } from '../api'
 import VocabularyNotebook from './VocabularyNotebook'
 import FlashcardQuiz from './FlashcardQuiz'
 
+const SENTENCES_PER_PAGE = 6
+
 // ─── localStorage helpers ───────────────────────────────────────────────
 const VOCAB_KEY = 'translator_vocabulary'
 
@@ -73,6 +75,22 @@ const SentenceBlockRenderer = memo(function SentenceBlockRenderer({ pairs, pinne
         id={`sentence-${idx}`}
       >
         <WordRenderer text={pair} />
+      </span>
+    )
+  })
+})
+
+/** Render one book page — a slice of sentences for one panel side. */
+const BookPageRenderer = memo(function BookPageRenderer({ sentences, globalOffset, pinnedSet }) {
+  return sentences.map((text, i) => {
+    const idx = globalOffset + i
+    return (
+      <span
+        key={idx}
+        className={`sentence-block${pinnedSet.has(idx) ? ' pinned' : ''}`}
+        data-sentence={idx}
+      >
+        <WordRenderer text={text} />
       </span>
     )
   })
@@ -159,11 +177,17 @@ function ResultView({ result, onBack }) {
   }, [])
 
   const scrollToSentence = useCallback((idx) => {
-    const el = document.getElementById(`sentence-${idx}`)
-    if (el) {
-      el.scrollIntoView({ behavior: 'smooth', block: 'center' })
-      el.classList.add('sentence-flash')
-      setTimeout(() => el.classList.remove('sentence-flash'), 1500)
+    const roots = isFullscreenRef.current
+      ? [fsOrigPanelRef.current, fsTranPanelRef.current]
+      : [originalPanelRef.current, translatedPanelRef.current]
+    for (const root of roots) {
+      if (!root) continue
+      const el = root.querySelector(`.sentence-block[data-sentence="${idx}"]`)
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+        el.classList.add('sentence-flash')
+        setTimeout(() => el.classList.remove('sentence-flash'), 1500)
+      }
     }
   }, [])
 
@@ -200,8 +224,47 @@ function ResultView({ result, onBack }) {
   // ── Refs & tooltip ──
   const originalPanelRef = useRef(null)
   const translatedPanelRef = useRef(null)
+  const fsOrigPanelRef = useRef(null)
+  const fsTranPanelRef = useRef(null)
+  const isFullscreenRef = useRef(false)
+  const isFsSyncing = useRef(false)
   const [tooltip, setTooltip] = useState(null)
   const [tooltipLoading, setTooltipLoading] = useState(false)
+
+  // ── Fullscreen mode ──
+  const [fullscreen, setFullscreen] = useState(false)
+  useEffect(() => { isFullscreenRef.current = fullscreen }, [fullscreen])
+
+  // ── Book mode ──
+  const [bookMode, setBookMode] = useState(false)
+  const [bookPage, setBookPage] = useState(0)
+  const [bookFlipDir, setBookFlipDir] = useState(null) // 'forward' | 'backward'
+
+  const bookSentences = useMemo(() =>
+    hasSentences ? originalSentences : original_text.split(/\n{2,}/),
+  [hasSentences, originalSentences, original_text])
+  const totalBookPages = Math.max(1, Math.ceil(bookSentences.length / SENTENCES_PER_PAGE))
+
+  const goBookPage = useCallback((dir) => {
+    setBookFlipDir(dir)
+    setBookPage((p) => dir === 'forward'
+      ? Math.min(p + 1, totalBookPages - 1)
+      : Math.max(p - 1, 0)
+    )
+    setTimeout(() => setBookFlipDir(null), 400)
+  }, [totalBookPages])
+
+  useEffect(() => {
+    if (!fullscreen || !bookMode) return
+    const handler = (e) => {
+      if (e.key === 'ArrowRight' || e.key === 'ArrowDown') goBookPage('forward')
+      else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') goBookPage('backward')
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [fullscreen, bookMode, goBookPage])
+
+  useEffect(() => { if (bookMode) setBookPage(0) }, [bookMode])
 
   // ── Synchronized scrolling (sentence-aligned) ──
   const [syncScroll, setSyncScroll] = useState(true)
@@ -259,6 +322,49 @@ function ResultView({ result, onBack }) {
     }
   }, [syncScroll])
 
+  // ── Fullscreen sync scroll ──
+  useEffect(() => {
+    if (!fullscreen || !syncScroll) return
+    const origEl = fsOrigPanelRef.current
+    const transEl = fsTranPanelRef.current
+    if (!origEl || !transEl) return
+
+    const syncFrom = (source, target) => () => {
+      if (isFsSyncing.current) return
+      isFsSyncing.current = true
+      const sentences = source.querySelectorAll('.sentence-block[data-sentence]')
+      const sourceTop = source.getBoundingClientRect().top
+      let topIdx = 0
+      let topOffset = 0
+      for (const s of sentences) {
+        const rect = s.getBoundingClientRect()
+        if (rect.bottom > sourceTop) {
+          topIdx = parseInt(s.dataset.sentence, 10)
+          const sentHeight = rect.height || 1
+          topOffset = Math.max(0, (sourceTop - rect.top) / sentHeight)
+          break
+        }
+      }
+      const match = target.querySelector(`.sentence-block[data-sentence="${topIdx}"]`)
+      if (match) {
+        const targetPanelTop = target.getBoundingClientRect().top
+        const matchRect = match.getBoundingClientRect()
+        const currentOffset = matchRect.top - targetPanelTop + target.scrollTop
+        target.scrollTop = currentOffset - target.clientTop + (topOffset * matchRect.height)
+      }
+      requestAnimationFrame(() => { isFsSyncing.current = false })
+    }
+
+    const onOrigScroll = syncFrom(origEl, transEl)
+    const onTransScroll = syncFrom(transEl, origEl)
+    origEl.addEventListener('scroll', onOrigScroll, { passive: true })
+    transEl.addEventListener('scroll', onTransScroll, { passive: true })
+    return () => {
+      origEl.removeEventListener('scroll', onOrigScroll)
+      transEl.removeEventListener('scroll', onTransScroll)
+    }
+  }, [fullscreen, syncScroll])
+
   // ── Frequency highlighting (DOM-based to avoid re-rendering all spans) ──
   useEffect(() => {
     const freqClasses = ['freq-very-common', 'freq-common', 'freq-uncommon', 'freq-rare']
@@ -293,8 +399,8 @@ function ResultView({ result, onBack }) {
     const displayWord = wordEl.textContent.replace(/[^\p{L}\p{N}'-]/gu, '').trim()
     if (!displayWord) return
 
-    const container = wordEl.closest('.panel-body') || originalPanelRef.current
-    const isTranslated = container === translatedPanelRef.current
+    const panelEl = wordEl.closest('[data-panel]')
+    const isTranslated = panelEl?.dataset.panel === 'translated'
     const rect = wordEl.getBoundingClientRect()
     const x = rect.left + rect.width / 2
     // Flip tooltip below the word when it's near the top of the viewport
@@ -377,8 +483,9 @@ function ResultView({ result, onBack }) {
     if (!sentenceEl) return
     const idx = sentenceEl.dataset.sentence
     addHighlight(sentenceEl, 'sentence-highlight')
-    // Scope to the two panel bodies instead of full document
-    const panels = [originalPanelRef.current, translatedPanelRef.current]
+    const panels = isFullscreenRef.current
+      ? [fsOrigPanelRef.current, fsTranPanelRef.current]
+      : [originalPanelRef.current, translatedPanelRef.current]
     for (const panel of panels) {
       if (!panel) continue
       const match = panel.querySelector(`.sentence-block[data-sentence="${idx}"]`)
@@ -419,7 +526,8 @@ function ResultView({ result, onBack }) {
     const sentIdx = sentEl ? sentEl.dataset.sentence : null
     const translated = word_map?.[word]
     if (translated) {
-      highlightMatchingWords(translatedPanelRef, translated, sentIdx)
+      const ref = isFullscreenRef.current ? fsTranPanelRef : translatedPanelRef
+      highlightMatchingWords(ref, translated, sentIdx)
     }
   }, [word_map, clearHighlights, highlightSentence, highlightMatchingWords, addHighlight])
 
@@ -435,8 +543,9 @@ function ResultView({ result, onBack }) {
     const sentIdx = sentEl ? sentEl.dataset.sentence : null
     const originals = reverseMap[word]
     if (originals) {
+      const ref = isFullscreenRef.current ? fsOrigPanelRef : originalPanelRef
       originals.forEach((orig) => {
-        highlightMatchingWords(originalPanelRef, orig, sentIdx)
+        highlightMatchingWords(ref, orig, sentIdx)
       })
     }
   }, [reverseMap, clearHighlights, highlightSentence, highlightMatchingWords, addHighlight])
@@ -599,12 +708,19 @@ function ResultView({ result, onBack }) {
             <button className="btn btn-outline" onClick={onBack}>
               <i className="fas fa-arrow-left"></i> Translate Another
             </button>
+            <button
+              className="btn-expand"
+              onClick={() => setFullscreen(true)}
+              title="Open both panels fullscreen"
+            >
+              <i className="fas fa-expand"></i> Fullscreen
+            </button>
           </div>
         </div>
       </section>
 
-      {/* ──── Pinned Sentences Drawer ──── */}
-      {pinsOpen && (
+      {/* ──── Drawers & Legend (normal view only) ──── */}
+      {!fullscreen && pinsOpen && (
         <div className="pins-drawer">
           <div className="pins-drawer-header">
             <h3><i className="fas fa-thumbtack"></i> Pinned Sentences</h3>
@@ -620,19 +736,11 @@ function ResultView({ result, onBack }) {
                 const text = originalSentences[idx] || `Sentence ${idx + 1}`
                 return (
                   <li key={idx} className="pins-list-item">
-                    <button
-                      className="pins-list-btn"
-                      onClick={() => scrollToSentence(idx)}
-                      title="Scroll to sentence"
-                    >
+                    <button className="pins-list-btn" onClick={() => scrollToSentence(idx)} title="Scroll to sentence">
                       <span className="pins-list-number">#{idx + 1}</span>
                       <span className="pins-list-text">{text.length > 80 ? text.slice(0, 80) + '…' : text}</span>
                     </button>
-                    <button
-                      className="pins-list-remove"
-                      onClick={() => togglePin(idx)}
-                      title="Unpin"
-                    >
+                    <button className="pins-list-remove" onClick={() => togglePin(idx)} title="Unpin">
                       <i className="fas fa-times"></i>
                     </button>
                   </li>
@@ -642,27 +750,13 @@ function ResultView({ result, onBack }) {
           )}
         </div>
       )}
-
-      {/* ──── Flashcard Quiz Drawer ──── */}
-      {quizOpen && (
-        <FlashcardQuiz
-          vocab={vocab}
-          onClose={() => setQuizOpen(false)}
-        />
+      {!fullscreen && quizOpen && (
+        <FlashcardQuiz vocab={vocab} onClose={() => setQuizOpen(false)} />
       )}
-
-      {/* ──── Vocabulary Notebook Drawer ──── */}
-      {notebookOpen && (
-        <VocabularyNotebook
-          vocab={vocab}
-          onRemove={removeFromVocab}
-          onClear={clearVocab}
-          onClose={() => setNotebookOpen(false)}
-        />
+      {!fullscreen && notebookOpen && (
+        <VocabularyNotebook vocab={vocab} onRemove={removeFromVocab} onClear={clearVocab} onClose={() => setNotebookOpen(false)} />
       )}
-
-      {/* ──── Frequency Legend ──── */}
-      {freqHighlight && (
+      {!fullscreen && freqHighlight && (
         <div className="freq-legend">
           <span className="freq-legend-title"><i className="fas fa-paint-brush"></i> Word Frequency:</span>
           <span className="freq-legend-item freq-very-common">Very Common</span>
@@ -677,11 +771,14 @@ function ResultView({ result, onBack }) {
         <div className="text-panel original-panel">
           <div className="panel-header">
             <h2><i className="fas fa-file-alt"></i> Original Text</h2>
-            <CopyButton targetId="originalText" />
+            <div className="panel-header-actions">
+              <CopyButton targetId="originalText" />
+            </div>
           </div>
           <div
             className={`panel-body interactive-text${pinMode ? ' pin-mode' : ''}`}
             id="originalText"
+            data-panel="original"
             ref={originalPanelRef}
             onMouseOver={handleOriginalHover}
             onMouseLeave={handleMouseOut}
@@ -698,11 +795,14 @@ function ResultView({ result, onBack }) {
         <div className="text-panel translated-panel">
           <div className="panel-header">
             <h2><i className="fas fa-language"></i> Translated ({target_lang})</h2>
-            <CopyButton targetId="translatedText" />
+            <div className="panel-header-actions">
+              <CopyButton targetId="translatedText" />
+            </div>
           </div>
           <div
             className={`panel-body interactive-text${pinMode ? ' pin-mode' : ''}`}
             id="translatedText"
+            data-panel="translated"
             ref={translatedPanelRef}
             onMouseOver={handleTranslatedHover}
             onMouseLeave={handleMouseOut}
@@ -717,8 +817,213 @@ function ResultView({ result, onBack }) {
         </div>
       </section>
 
-      {/* Tooltip rendered at root level to avoid panel overflow clipping */}
-      {tooltipJsx}
+      {/* Tooltip (normal view) */}
+      {!fullscreen && tooltipJsx}
+
+      {/* ──── Fullscreen Mode ──── */}
+      {fullscreen && (
+        <div className="fullscreen-overlay">
+          <div className="fullscreen-modal">
+
+            {/* ── Toolbar ── */}
+            <div className="fullscreen-toolbar">
+              <div className="fullscreen-toolbar-left">
+                <i className="fas fa-expand-arrows-alt"></i>
+                <span>Fullscreen</span>
+                {pinMode && (
+                  <span className="fs-pin-hint">
+                    <i className="fas fa-thumbtack"></i> Pin mode ON
+                  </span>
+                )}
+              </div>
+              <div className="fullscreen-toolbar-actions">
+                <button className={`btn-notebook-toggle ${pinMode ? 'active' : ''}`} onClick={() => setPinMode((v) => !v)}>
+                  <i className="fas fa-thumbtack"></i> {pinMode ? 'Exit Pin' : 'Pin Mode'}
+                </button>
+                <button className={`btn-notebook-toggle ${pinsOpen ? 'active' : ''}`} onClick={() => setPinsOpen((v) => !v)}>
+                  <i className="fas fa-list"></i> Pins
+                  {pinnedSentences.size > 0 && <span className="vocab-badge">{pinnedSentences.size}</span>}
+                </button>
+                <button className={`btn-notebook-toggle ${notebookOpen ? 'active' : ''}`} onClick={() => setNotebookOpen((v) => !v)}>
+                  <i className="fas fa-book"></i> Vocabulary
+                  {vocab.length > 0 && <span className="vocab-badge">{vocab.length}</span>}
+                </button>
+                <button className={`btn-notebook-toggle ${quizOpen ? 'active' : ''}`} onClick={() => setQuizOpen((v) => !v)}>
+                  <i className="fas fa-brain"></i> Quiz
+                  {vocab.length > 0 && <span className="vocab-badge">{vocab.length}</span>}
+                </button>
+                <button className={`btn-notebook-toggle ${syncScroll ? 'active' : ''}`} onClick={() => setSyncScroll((v) => !v)} title="Sync scroll">
+                  <i className="fas fa-arrows-alt-v"></i> Sync
+                </button>
+                <button className={`btn-notebook-toggle ${freqHighlight ? 'active' : ''}`} onClick={() => setFreqHighlight((v) => !v)} title="Word frequency">
+                  <i className="fas fa-paint-brush"></i> Freq
+                </button>
+                <button className={`btn-notebook-toggle ${bookMode ? 'active' : ''}`} onClick={() => setBookMode((v) => !v)} title="Book reading mode">
+                  <i className="fas fa-book-open"></i> Book
+                </button>
+                <button className="btn-expand" onClick={() => setFullscreen(false)} title="Exit fullscreen">
+                  <i className="fas fa-compress"></i> Exit
+                </button>
+              </div>
+            </div>
+
+            {/* ── Drawers inside fullscreen ── */}
+            {pinsOpen && (
+              <div className="fs-drawer-area">
+                <div className="pins-drawer">
+                  <div className="pins-drawer-header">
+                    <h3><i className="fas fa-thumbtack"></i> Pinned Sentences</h3>
+                    <button className="btn-close-drawer" onClick={() => setPinsOpen(false)}><i className="fas fa-times"></i></button>
+                  </div>
+                  {pinnedSentences.size === 0 ? (
+                    <p className="pins-empty">No pinned sentences yet. Right-click any sentence to pin it.</p>
+                  ) : (
+                    <ul className="pins-list">
+                      {[...pinnedSentences].sort((a, b) => a - b).map((idx) => {
+                        const text = originalSentences[idx] || `Sentence ${idx + 1}`
+                        return (
+                          <li key={idx} className="pins-list-item">
+                            <button className="pins-list-btn" onClick={() => scrollToSentence(idx)}>
+                              <span className="pins-list-number">#{idx + 1}</span>
+                              <span className="pins-list-text">{text.length > 80 ? text.slice(0, 80) + '…' : text}</span>
+                            </button>
+                            <button className="pins-list-remove" onClick={() => togglePin(idx)}>
+                              <i className="fas fa-times"></i>
+                            </button>
+                          </li>
+                        )
+                      })}
+                    </ul>
+                  )}
+                </div>
+              </div>
+            )}
+            {quizOpen && <FlashcardQuiz vocab={vocab} onClose={() => setQuizOpen(false)} />}
+            {notebookOpen && <VocabularyNotebook vocab={vocab} onRemove={removeFromVocab} onClear={clearVocab} onClose={() => setNotebookOpen(false)} />}
+            {freqHighlight && (
+              <div className="freq-legend">
+                <span className="freq-legend-title"><i className="fas fa-paint-brush"></i> Word Frequency:</span>
+                <span className="freq-legend-item freq-very-common">Very Common</span>
+                <span className="freq-legend-item freq-common">Common</span>
+                <span className="freq-legend-item freq-uncommon">Uncommon</span>
+                <span className="freq-legend-item freq-rare">Rare</span>
+              </div>
+            )}
+
+            {/* ── Side-by-side panels OR Book mode ── */}
+            {bookMode ? (
+              <div className="book-reader">
+                <div className={`book-spread${bookFlipDir ? ` book-flip-${bookFlipDir}` : ''}`}>
+                  {/* Left page — Original */}
+                  <div className="book-page book-page-left">
+                    <div className="book-page-label"><i className="fas fa-file-alt"></i> Original</div>
+                    <div
+                      className={`book-page-body interactive-text original-panel${pinMode ? ' pin-mode' : ''}`}
+                      data-panel="original"
+                      onMouseOver={handleOriginalHover}
+                      onMouseLeave={handleMouseOut}
+                      onClick={handlePanelClick}
+                      onContextMenu={handleContextMenu}
+                    >
+                      <BookPageRenderer
+                        sentences={(hasSentences ? originalSentences : original_text.split(/\n{2,}/)).slice(
+                          bookPage * SENTENCES_PER_PAGE, (bookPage + 1) * SENTENCES_PER_PAGE
+                        )}
+                        globalOffset={bookPage * SENTENCES_PER_PAGE}
+                        pinnedSet={pinnedSentences}
+                      />
+                    </div>
+                    <div className="book-page-number">{bookPage * 2 + 1}</div>
+                  </div>
+
+                  <div className="book-spine" />
+
+                  {/* Right page — Translated */}
+                  <div className="book-page book-page-right">
+                    <div className="book-page-label"><i className="fas fa-language"></i> {target_lang}</div>
+                    <div
+                      className={`book-page-body interactive-text translated-panel${pinMode ? ' pin-mode' : ''}`}
+                      data-panel="translated"
+                      onMouseOver={handleTranslatedHover}
+                      onMouseLeave={handleMouseOut}
+                      onClick={handlePanelClick}
+                      onContextMenu={handleContextMenu}
+                    >
+                      <BookPageRenderer
+                        sentences={(hasSentences ? translatedSentences : translated_text.split(/\n{2,}/)).slice(
+                          bookPage * SENTENCES_PER_PAGE, (bookPage + 1) * SENTENCES_PER_PAGE
+                        )}
+                        globalOffset={bookPage * SENTENCES_PER_PAGE}
+                        pinnedSet={pinnedSentences}
+                      />
+                    </div>
+                    <div className="book-page-number">{bookPage * 2 + 2}</div>
+                  </div>
+                </div>
+
+                <div className="book-nav">
+                  <button className="book-nav-btn" onClick={() => goBookPage('backward')} disabled={bookPage === 0} title="Previous page (←)">
+                    <i className="fas fa-chevron-left"></i>
+                  </button>
+                  <span className="book-nav-info">Page {bookPage + 1} / {totalBookPages}</span>
+                  <button className="book-nav-btn" onClick={() => goBookPage('forward')} disabled={bookPage >= totalBookPages - 1} title="Next page (→)">
+                    <i className="fas fa-chevron-right"></i>
+                  </button>
+                </div>
+              </div>
+            ) : (
+            <div className="fullscreen-split-body">
+              <div className="fullscreen-split-panel">
+                <div className="fullscreen-split-panel-header">
+                  <h2><i className="fas fa-file-alt"></i> Original Text</h2>
+                  <CopyButton targetId="fs-originalText" />
+                </div>
+                <div
+                  className={`fullscreen-modal-body interactive-text original-panel${pinMode ? ' pin-mode' : ''}`}
+                  id="fs-originalText"
+                  data-panel="original"
+                  ref={fsOrigPanelRef}
+                  onMouseOver={handleOriginalHover}
+                  onMouseLeave={handleMouseOut}
+                  onClick={handlePanelClick}
+                  onContextMenu={handleContextMenu}
+                >
+                  {hasSentences
+                    ? <SentenceBlockRenderer pairs={originalSentences} pinnedSet={pinnedSentences} />
+                    : <WordRenderer text={original_text} />}
+                </div>
+              </div>
+
+              <div className="fullscreen-split-divider" />
+
+              <div className="fullscreen-split-panel">
+                <div className="fullscreen-split-panel-header">
+                  <h2><i className="fas fa-language"></i> Translated ({target_lang})</h2>
+                  <CopyButton targetId="fs-translatedText" />
+                </div>
+                <div
+                  className={`fullscreen-modal-body interactive-text translated-panel${pinMode ? ' pin-mode' : ''}`}
+                  id="fs-translatedText"
+                  data-panel="translated"
+                  ref={fsTranPanelRef}
+                  onMouseOver={handleTranslatedHover}
+                  onMouseLeave={handleMouseOut}
+                  onClick={handlePanelClick}
+                  onContextMenu={handleContextMenu}
+                >
+                  {hasSentences
+                    ? <SentenceBlockRenderer pairs={translatedSentences} pinnedSet={pinnedSentences} />
+                    : <WordRenderer text={translated_text} />}
+                </div>
+              </div>
+            </div>
+            )}{/* end book mode ternary */}
+
+            {/* Tooltip inside fullscreen */}
+            {tooltipJsx}
+          </div>
+        </div>
+      )}
     </>
   )
 }

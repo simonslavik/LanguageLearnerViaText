@@ -1,8 +1,10 @@
-"""Authentication routes — register & login."""
+"""Authentication routes — register, login & Google OAuth."""
 
-from fastapi import APIRouter, HTTPException
+import httpx
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, EmailStr
 
+from app.config import settings
 from app.database import get_db
 from app.services.auth import (
     create_access_token,
@@ -10,7 +12,6 @@ from app.services.auth import (
     hash_password,
     verify_password,
 )
-from fastapi import Depends
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -77,4 +78,56 @@ async def me(user=Depends(get_current_user)):
         "id": str(user["_id"]),
         "name": user["name"],
         "email": user["email"],
+    }
+
+
+class GoogleAuthBody(BaseModel):
+    credential: str
+
+
+@router.post("/google")
+async def google_login(body: GoogleAuthBody):
+    async with httpx.AsyncClient() as client:
+        r = await client.get(
+            "https://oauth2.googleapis.com/tokeninfo",
+            params={"id_token": body.credential},
+        )
+
+    if r.status_code != 200:
+        raise HTTPException(status_code=401, detail="Invalid Google token")
+
+    info = r.json()
+
+    if settings.GOOGLE_CLIENT_ID and info.get("aud") != settings.GOOGLE_CLIENT_ID:
+        raise HTTPException(status_code=401, detail="Token audience mismatch")
+
+    email = info.get("email")
+    if not email:
+        raise HTTPException(status_code=401, detail="Email not provided by Google")
+
+    name = info.get("name") or email
+    picture = info.get("picture", "")
+
+    db = get_db()
+    user = await db.users.find_one({"email": email})
+
+    if not user:
+        result = await db.users.insert_one(
+            {
+                "name": name,
+                "email": email,
+                "picture": picture,
+                "password": None,
+                "provider": "google",
+            }
+        )
+        user_id = str(result.inserted_id)
+    else:
+        user_id = str(user["_id"])
+        name = user.get("name", name)
+
+    token = create_access_token(user_id, email)
+    return {
+        "token": token,
+        "user": {"id": user_id, "name": name, "email": email},
     }

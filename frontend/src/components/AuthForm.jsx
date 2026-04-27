@@ -1,5 +1,6 @@
 import { useState } from 'react'
-import { loginUser, registerUser } from '../api'
+import { GoogleLogin } from '@react-oauth/google'
+import { loginUser, registerUser, googleLogin } from '../api'
 
 function AuthForm({ onAuth }) {
   const [isLogin, setIsLogin] = useState(true)
@@ -121,6 +122,31 @@ function AuthForm({ onAuth }) {
             )}
           </button>
         </form>
+
+        <div className="auth-divider"><span>or</span></div>
+
+        <div className="google-btn-wrapper">
+          <GoogleLogin
+            onSuccess={async ({ credential }) => {
+              setError('')
+              setLoading(true)
+              try {
+                const data = await googleLogin(credential)
+                localStorage.setItem('token', data.token)
+                onAuth(data.user)
+              } catch (err) {
+                setError(err.message)
+              } finally {
+                setLoading(false)
+              }
+            }}
+            onError={() => setError('Google sign-in failed')}
+            width={340}
+            shape="rectangular"
+            theme="outline"
+            text="signin_with"
+          />
+        </div>
       </div>
     </section>
   )

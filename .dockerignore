@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pyw
+*.egg-info/
+.eggs/
+dist/
+build/
+*.egg
+
+# Virtual environment
+venv/
+.venv/
+env/
+
+# Environment / secrets
+.env
+*.env.local
+
+# Uploads (mounted as a volume at runtime)
+uploads/
+
+# Frontend build artefacts (built inside its own container)
+frontend/node_modules/
+frontend/dist/
+frontend/.env.local
+
+# Tests
+tests/
+
+# IDE / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Git
+.git/
+.gitignore

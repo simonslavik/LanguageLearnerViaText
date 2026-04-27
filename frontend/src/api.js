@@ -74,6 +74,17 @@ export async function loginUser(email, password) {
   return data
 }
 
+export async function googleLogin(credential) {
+  const res = await fetch(`${API_BASE}/auth/google`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ credential }),
+  })
+  const data = await res.json()
+  if (!res.ok) throw new Error(data.detail || 'Google login failed')
+  return data
+}
+
 export async function fetchMe() {
   const res = await fetch(`${API_BASE}/auth/me`, {
     headers: getAuthHeaders(),
