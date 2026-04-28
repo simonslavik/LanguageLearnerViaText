@@ -1,9 +1,27 @@
 """Translation service — translates text to a target language using Google Translate."""
 
+import logging
 import re
-from typing import Optional, Tuple
+from typing import Optional
 
 from deep_translator import GoogleTranslator
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
+from wordfreq import zipf_frequency
+
+from app.constants import (
+    FREQ_COMMON,
+    FREQ_UNCOMMON,
+    FREQ_VERY_COMMON,
+    MIN_WORD_LENGTH,
+    WORD_PATTERN,
+)
+
+logger = logging.getLogger(__name__)
 
 # Supported languages (code → display name)
 SUPPORTED_LANGUAGES: dict[str, str] = {
@@ -31,6 +49,17 @@ SUPPORTED_LANGUAGES: dict[str, str] = {
 
 # Google Translate has a 5 000-char limit per request
 _CHUNK_SIZE = 4900
+
+
+@retry(
+    retry=retry_if_exception_type(Exception),
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=1, max=8),
+    reraise=True,
+)
+def _translate_with_retry(translator: GoogleTranslator, text: str) -> str:
+    """Call the translator with automatic exponential-backoff retry (max 3 attempts)."""
+    return translator.translate(text)
 
 
 def _chunk_text(text: str, max_len: int = _CHUNK_SIZE) -> list[str]:
@@ -71,7 +100,7 @@ def translate_text(text: str, target_lang: str, source_lang: str = "auto") -> st
 
     for chunk in chunks:
         translator = GoogleTranslator(source=source_lang, target=target_lang)
-        result = translator.translate(chunk)
+        result = _translate_with_retry(translator, chunk)
         if result:
             translated_chunks.append(result)
 
@@ -119,11 +148,11 @@ def build_word_map(text: str, target_lang: str, source_lang: str = "auto") -> di
         """Translate one word individually (fallback)."""
         try:
             t = GoogleTranslator(source=source_lang, target=target_lang)
-            result = t.translate(word)
+            result = _translate_with_retry(t, word)
             if result:
                 return result.strip().lower()
         except Exception:
-            pass
+            logger.debug("Single-word translation failed for %r", word)
         return None
 
     # Process in small fixed-size batches
@@ -133,7 +162,7 @@ def build_word_map(text: str, target_lang: str, source_lang: str = "auto") -> di
 
         try:
             translator = GoogleTranslator(source=source_lang, target=target_lang)
-            translated_batch = translator.translate(batch_text)
+            translated_batch = _translate_with_retry(translator, batch_text)
             if not translated_batch:
                 # Batch failed — try individually
                 for word in batch:
@@ -277,6 +306,7 @@ def build_sentence_alignment(
         try:
             translated = translate_text(joined, target_lang, source_lang)
         except Exception:
+            logger.warning("Sentence batch translation failed; using empty placeholders.")
             translated = SEP.join([""] * len(batch))
 
         parts = translated.split("|||")
@@ -298,3 +328,78 @@ def build_sentence_alignment(
 
     _flush(batch)
     return pairs
+
+
+# ---------------------------------------------------------------------------
+# Word frequency & CEFR analysis
+# ---------------------------------------------------------------------------
+
+def build_freq_tiers(text: str, lang_code: str) -> dict[str, str]:
+    """Return a ``{word: tier_class}`` mapping for all words in *text*.
+
+    Tier classes: ``freq-very-common``, ``freq-common``, ``freq-uncommon``,
+    ``freq-rare`` — based on Zipf frequency thresholds.
+    """
+    unique_words = {
+        w for w in WORD_PATTERN.findall(text.lower()) if len(w) >= MIN_WORD_LENGTH
+    }
+    tiers: dict[str, str] = {}
+    for w in unique_words:
+        z = zipf_frequency(w, lang_code)
+        if z >= FREQ_VERY_COMMON:
+            tiers[w] = "freq-very-common"
+        elif z >= FREQ_COMMON:
+            tiers[w] = "freq-common"
+        elif z >= FREQ_UNCOMMON:
+            tiers[w] = "freq-uncommon"
+        else:
+            tiers[w] = "freq-rare"
+    return tiers
+
+
+def compute_cefr(text: str, lang_code: str) -> dict:
+    """Estimate CEFR difficulty from the word frequency distribution of *text*.
+
+    Returns a dict with keys: ``level``, ``score``, ``rare_pct``, ``detail``.
+    """
+    words = [w for w in WORD_PATTERN.findall(text.lower()) if len(w) >= MIN_WORD_LENGTH]
+    if not words:
+        return {"level": "A1", "score": 0.0, "rare_pct": 0.0, "detail": {}}
+
+    freqs = [zipf_frequency(w, lang_code) for w in set(words)]
+    avg_freq = sum(freqs) / len(freqs)
+
+    buckets: dict[str, int] = {"very_common": 0, "common": 0, "uncommon": 0, "rare": 0}
+    for z in freqs:
+        if z >= FREQ_VERY_COMMON:
+            buckets["very_common"] += 1
+        elif z >= FREQ_COMMON:
+            buckets["common"] += 1
+        elif z >= FREQ_UNCOMMON:
+            buckets["uncommon"] += 1
+        else:
+            buckets["rare"] += 1
+
+    total = len(freqs)
+    rare_pct = (buckets["uncommon"] + buckets["rare"]) / total if total else 0.0
+
+    if avg_freq >= 5.0 and rare_pct < 0.15:
+        level = "A1"
+    elif avg_freq >= 4.5 and rare_pct < 0.25:
+        level = "A2"
+    elif avg_freq >= 4.0 and rare_pct < 0.35:
+        level = "B1"
+    elif avg_freq >= 3.5 and rare_pct < 0.50:
+        level = "B2"
+    elif avg_freq >= 3.0:
+        level = "C1"
+    else:
+        level = "C2"
+
+    return {
+        "level": level,
+        "score": round(avg_freq, 2),
+        "rare_pct": round(rare_pct * 100, 1),
+        "detail": {k: round(v / total * 100, 1) if total else 0 for k, v in buckets.items()},
+    }
+

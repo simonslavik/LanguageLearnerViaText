@@ -25,7 +25,7 @@ export async function translatePdf(file, targetLang) {
   const data = await res.json()
 
   if (!res.ok) {
-    throw new Error(data.detail || data.error || 'Translation failed')
+    throw new Error(data.detail || 'Translation failed')
   }
 
   return data

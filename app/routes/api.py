@@ -1,31 +1,38 @@
 """Translation API routes — FastAPI endpoints for the React frontend."""
 
+import asyncio
+import hashlib
+import logging
 import os
-import uuid
 import tempfile
+import uuid
 from datetime import datetime
 
+import genanki
 from bson import ObjectId
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse as FastAPIFileResponse
+from langdetect import detect as detect_language
 from pydantic import BaseModel
 from typing import List, Optional
 
 from app.config import settings
+from app.constants import MAX_WORD_LENGTH
 from app.database import get_db
+from app.limiter import limiter
 from app.services.auth import get_optional_user
 from app.services.pdf_parser import extract_text_from_pdf
-from langdetect import detect as detect_language
-from wordfreq import zipf_frequency
-
 from app.services.translator import (
     SUPPORTED_LANGUAGES,
+    build_freq_tiers,
     build_sentence_alignment,
     build_word_map,
+    compute_cefr,
     translate_text,
 )
 from app.utils.helpers import allowed_file
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["translation"])
 
 
@@ -36,14 +43,16 @@ async def get_languages():
 
 
 @router.post("/translate")
+@limiter.limit("10/minute")
 async def translate(
+    request: Request,
     pdf_file: UploadFile = File(...),
     target_lang: str = Form(...),
     user=Depends(get_optional_user),
 ):
     """Accept a PDF upload + target language and return original & translated text."""
 
-    # --- validate file ---
+    # --- validate file name ---
     if not pdf_file.filename:
         raise HTTPException(status_code=400, detail="No file selected.")
 
@@ -54,93 +63,43 @@ async def translate(
     if target_lang not in SUPPORTED_LANGUAGES:
         raise HTTPException(status_code=400, detail="Please select a valid target language.")
 
-    # --- save uploaded file ---
+    # --- read & enforce size limit ---
+    contents = await pdf_file.read()
+    max_bytes = settings.MAX_UPLOAD_MB * 1024 * 1024
+    if len(contents) > max_bytes:
+        raise HTTPException(
+            status_code=400,
+            detail=f"File exceeds the {settings.MAX_UPLOAD_MB} MB size limit.",
+        )
+
+    # --- save to disk ---
     unique_name = f"{uuid.uuid4().hex}_{pdf_file.filename}"
     upload_path = os.path.join(settings.UPLOAD_FOLDER, unique_name)
 
     try:
-        contents = await pdf_file.read()
         with open(upload_path, "wb") as f:
             f.write(contents)
 
         original_text = extract_text_from_pdf(upload_path)
 
-        # Detect the source language so the frontend can do reverse translation
+        # Detect source language (fallback to "en")
         try:
             source_lang_code = detect_language(original_text[:500])
         except Exception:
-            source_lang_code = "en"  # fallback
+            source_lang_code = "en"
 
-        sentence_pairs = build_sentence_alignment(original_text, target_lang)
+        # Parallelise the two expensive translation calls
+        sentence_pairs, word_map = await asyncio.gather(
+            asyncio.to_thread(build_sentence_alignment, original_text, target_lang),
+            asyncio.to_thread(build_word_map, original_text, target_lang),
+        )
+
         translated_text = " ".join(p["translated"] for p in sentence_pairs if p["translated"])
-        word_map = build_word_map(original_text, target_lang)
 
-        # Build word frequency tiers using real language frequency data
-        import re as _re
-
-        def _build_freq_tiers(text, lang_code):
-            unique_words = set()
-            for w in _re.findall(r'[\w]+', text.lower()):
-                if len(w) >= 2:
-                    unique_words.add(w)
-            tiers = {}
-            for w in unique_words:
-                z = zipf_frequency(w, lang_code)
-                if z >= 5.5:
-                    tiers[w] = 'freq-very-common'
-                elif z >= 4.0:
-                    tiers[w] = 'freq-common'
-                elif z >= 2.5:
-                    tiers[w] = 'freq-uncommon'
-                else:
-                    tiers[w] = 'freq-rare'
-            return tiers
-
-        word_freq_tiers = _build_freq_tiers(original_text, source_lang_code)
-        translated_word_freq_tiers = _build_freq_tiers(translated_text, target_lang)
-
-        # Compute CEFR difficulty estimate from word frequency distribution
-        def _compute_cefr(text, lang_code):
-            words = [w for w in _re.findall(r'[\w]+', text.lower()) if len(w) >= 2]
-            if not words:
-                return {"level": "A1", "score": 0, "detail": {}}
-            freqs = [zipf_frequency(w, lang_code) for w in set(words)]
-            avg_freq = sum(freqs) / len(freqs) if freqs else 0
-            # Count distribution
-            buckets = {"very_common": 0, "common": 0, "uncommon": 0, "rare": 0}
-            for z in freqs:
-                if z >= 5.5:
-                    buckets["very_common"] += 1
-                elif z >= 4.0:
-                    buckets["common"] += 1
-                elif z >= 2.5:
-                    buckets["uncommon"] += 1
-                else:
-                    buckets["rare"] += 1
-            total = len(freqs)
-            rare_pct = (buckets["uncommon"] + buckets["rare"]) / total if total else 0
-            # Map average frequency + rare word percentage to CEFR
-            if avg_freq >= 5.0 and rare_pct < 0.15:
-                level = "A1"
-            elif avg_freq >= 4.5 and rare_pct < 0.25:
-                level = "A2"
-            elif avg_freq >= 4.0 and rare_pct < 0.35:
-                level = "B1"
-            elif avg_freq >= 3.5 and rare_pct < 0.50:
-                level = "B2"
-            elif avg_freq >= 3.0:
-                level = "C1"
-            else:
-                level = "C2"
-            return {
-                "level": level,
-                "score": round(avg_freq, 2),
-                "rare_pct": round(rare_pct * 100, 1),
-                "detail": {k: round(v / total * 100, 1) if total else 0 for k, v in buckets.items()},
-            }
-
-        original_cefr = _compute_cefr(original_text, source_lang_code)
-        translated_cefr = _compute_cefr(translated_text, target_lang)
+        word_freq_tiers = build_freq_tiers(original_text, source_lang_code)
+        translated_word_freq_tiers = build_freq_tiers(translated_text, target_lang)
+        original_cefr = compute_cefr(original_text, source_lang_code)
+        translated_cefr = compute_cefr(translated_text, target_lang)
 
         result = {
             "filename": pdf_file.filename,
@@ -157,7 +116,7 @@ async def translate(
             "sentence_pairs": sentence_pairs,
         }
 
-        # Save to history if user is logged in
+        # Save to history if the user is logged in
         if user:
             db = get_db()
             history_doc = {
@@ -177,11 +136,15 @@ async def translate(
         raise
 
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"An error occurred: {exc}")
+        logger.error("Translation processing failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail="Translation processing failed.")
 
     finally:
-        if os.path.exists(upload_path):
-            os.remove(upload_path)
+        try:
+            if os.path.exists(upload_path):
+                os.remove(upload_path)
+        except OSError as exc:
+            logger.warning("Failed to clean up upload file %s: %s", upload_path, exc)
 
 
 @router.post("/translate-word")
@@ -199,6 +162,12 @@ async def translate_word(
     if not word:
         raise HTTPException(status_code=400, detail="No word provided.")
 
+    if len(word) > MAX_WORD_LENGTH:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Word exceeds maximum length of {MAX_WORD_LENGTH} characters.",
+        )
+
     try:
         translated = translate_text(word, target_lang, source_lang)
         return {
@@ -206,8 +175,11 @@ async def translate_word(
             "translated": translated.strip(),
             "target_lang": SUPPORTED_LANGUAGES.get(target_lang, target_lang),
         }
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Translation failed: {exc}")
+        logger.error("Word translation failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail="Word translation failed.")
 
 
 # ── Anki Export ──────────────────────────────────────────────────────────
@@ -227,9 +199,6 @@ class AnkiExportRequest(BaseModel):
 @router.post("/export-anki")
 async def export_anki(payload: AnkiExportRequest):
     """Generate an Anki .apkg deck from the user's vocabulary list."""
-    import genanki
-    import hashlib
-
     if not payload.vocab:
         raise HTTPException(status_code=400, detail="No vocabulary to export.")
 
@@ -280,7 +249,6 @@ async def export_anki(payload: AnkiExportRequest):
         )
         deck.add_note(note)
 
-    # Write to a temp file and stream it back
     tmp = tempfile.NamedTemporaryFile(suffix=".apkg", delete=False)
     try:
         genanki.Package(deck).write_to_file(tmp.name)
@@ -293,4 +261,5 @@ async def export_anki(payload: AnkiExportRequest):
     except Exception as exc:
         if os.path.exists(tmp.name):
             os.remove(tmp.name)
-        raise HTTPException(status_code=500, detail=f"Anki export failed: {exc}")
+        logger.error("Anki export failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail="Anki export failed.")

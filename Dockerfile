@@ -1,7 +1,8 @@
-# ── Backend — FastAPI / Uvicorn ──────────────────────────────────────────────
-FROM python:3.11-slim
+# ── Backend — FastAPI / Uvicorn (multi-stage build) ─────────────────────────
 
-# Install OS-level dependencies needed by some Python packages
+# Stage 1: build dependencies in an isolated venv
+FROM python:3.11-slim AS builder
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
         gcc \
         libffi-dev \
@@ -9,9 +10,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Install Python dependencies first (layer cache)
+# Create a venv so only it needs to be copied to the runtime image
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+
+# Stage 2: lean runtime image
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Copy only the built venv from the builder (no gcc / build tools in prod)
+COPY --from=builder /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
 
 # Copy application source
 COPY app/ ./app/
@@ -21,5 +34,4 @@ RUN mkdir -p uploads
 
 EXPOSE 5000
 
-# Run with Uvicorn; workers can be tuned via the WEB_CONCURRENCY env var
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "5000"]

@@ -10,10 +10,13 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
 
 from app.config import settings
 from app.database import connect_db, close_db
+from app.limiter import limiter
 from app.routes.api import router as api_router
 from app.routes.auth import router as auth_router
 from app.routes.history import router as history_router
@@ -27,6 +30,15 @@ app = FastAPI(
     version="1.0.0",
 )
 
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+
+@app.get("/health", tags=["ops"])
+async def health_check():
+    """Simple liveness probe used by Docker healthcheck and monitoring."""
+    return {"status": "ok"}
+
 
 @app.on_event("startup")
 async def startup():
@@ -38,12 +50,14 @@ async def shutdown():
     await close_db()
 
 
-# CORS — allow React dev server on :5173
+# CORS — restrict to configured origins
+_allowed_origins = [o.strip() for o in settings.ALLOWED_ORIGINS.split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=_allowed_origins,
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
+    allow_credentials=True,
 )
 
 # API routes

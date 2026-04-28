@@ -21,10 +21,25 @@ class Settings:
     # JWT
     JWT_SECRET: str = os.getenv("JWT_SECRET", SECRET_KEY)
     JWT_ALGORITHM: str = "HS256"
-    JWT_EXPIRE_MINUTES: int = int(os.getenv("JWT_EXPIRE_MINUTES", "1440"))  # 24h
+    JWT_EXPIRE_MINUTES: int = int(os.getenv("JWT_EXPIRE_MINUTES", "60"))  # 1h default
 
     # Google OAuth
     GOOGLE_CLIENT_ID: str = os.getenv("GOOGLE_CLIENT_ID", "")
 
+    # CORS — comma-separated list of allowed origins
+    ALLOWED_ORIGINS: str = os.getenv(
+        "ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:3000"
+    )
+
+
+import logging as _logging
+_log = _logging.getLogger(__name__)
 
 settings = Settings()
+
+_INSECURE_DEFAULTS = {"dev-secret-key-change-in-production", ""}
+if settings.SECRET_KEY in _INSECURE_DEFAULTS or settings.JWT_SECRET in _INSECURE_DEFAULTS:
+    _log.warning(
+        "WARNING: SECRET_KEY / JWT_SECRET is using an insecure default. "
+        "Set strong secrets in the environment before deploying to production."
+    )

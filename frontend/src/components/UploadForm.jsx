@@ -88,7 +88,7 @@ function UploadForm({ onResult }) {
 
       {/* Error */}
       {error && (
-        <div className="flash flash-error">
+        <div id="upload-error" className="flash flash-error" role="alert">
           <span>{error}</span>
           <button className="flash-close" onClick={() => setError('')}>
             <i className="fas fa-times"></i>
@@ -102,11 +102,21 @@ function UploadForm({ onResult }) {
           {/* Drop Zone */}
           <div
             className={`drop-zone ${dragOver ? 'dragover' : ''}`}
+            role="button"
+            tabIndex={0}
+            aria-label="Drop zone for PDF upload. Press Enter or Space to open file browser."
+            aria-describedby={error ? 'upload-error' : undefined}
             onDragEnter={(e) => { e.preventDefault(); setDragOver(true) }}
             onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
             onDragLeave={(e) => { e.preventDefault(); setDragOver(false) }}
             onDrop={handleDrop}
             onClick={() => fileInputRef.current?.click()}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault()
+                fileInputRef.current?.click()
+              }
+            }}
           >
             <i className="fas fa-cloud-upload-alt drop-icon"></i>
             <p className="drop-text">Drag & drop your PDF here</p>
