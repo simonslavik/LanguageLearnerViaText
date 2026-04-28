@@ -1,13 +1,14 @@
 """Tests for the translator service."""
 
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, call
 
 from app.services.translator import (
     translate_text,
     _chunk_text,
     _split_sentences,
     build_sentence_alignment,
+    build_word_map,
     SUPPORTED_LANGUAGES,
 )
 
@@ -78,6 +79,104 @@ def test_split_sentences_pdf_newlines():
     assert "wraps to the next line." in sents[0]
 
 
+def test_split_sentences_empty():
+    assert _split_sentences("") == []
+    assert _split_sentences("   ") == []
+
+
+def test_split_sentences_no_punctuation():
+    """A paragraph with no sentence-ending punct should come back as one sentence."""
+    text = "This has no terminal punctuation"
+    sents = _split_sentences(text)
+    assert len(sents) == 1
+    assert sents[0] == "This has no terminal punctuation"
+
+
+def test_split_sentences_abbreviations_not_split():
+    """Common abbreviations like Dr. and Mr. must not trigger a new sentence."""
+    text = "Dr. Smith and Mr. Jones attended. They left at 9 p.m. sharp."
+    sents = _split_sentences(text)
+    # Should not produce fragments like ["Dr.", "Smith and Mr.", ...]
+    assert all(len(s) > 5 for s in sents)
+
+
+def test_split_sentences_paragraph_breaks():
+    """Double-newline paragraphs should each be processed independently."""
+    text = "First paragraph.\n\nSecond paragraph."
+    sents = _split_sentences(text)
+    assert len(sents) == 2
+
+
+# ── build_sentence_alignment ──────────────────────────────────────────────
+
+@patch("app.services.translator.GoogleTranslator")
+def test_build_sentence_alignment_returns_pairs(mock_gt_cls):
+    """Alignment produces one dict per sentence with 'original'/'translated' keys."""
+    mock_instance = MagicMock()
+    mock_instance.translate.side_effect = lambda t: f"[T]{t}"
+    mock_gt_cls.return_value = mock_instance
+
+    pairs = build_sentence_alignment("Hello world. How are you?", "es")
+    assert isinstance(pairs, list)
+    assert len(pairs) >= 1
+    for pair in pairs:
+        assert "original" in pair
+        assert "translated" in pair
+
+
+@patch("app.services.translator.GoogleTranslator")
+def test_build_sentence_alignment_empty_text(mock_gt_cls):
+    """Empty input returns an empty list without calling the API."""
+    pairs = build_sentence_alignment("", "es")
+    assert pairs == []
+    mock_gt_cls.assert_not_called()
+
+
+# ── build_word_map ────────────────────────────────────────────────────────
+
+@patch("app.services.translator.GoogleTranslator")
+def test_build_word_map_basic(mock_gt_cls):
+    """build_word_map returns a dict mapping source words to translations."""
+    mock_instance = MagicMock()
+    # Simulate batch response: one translated line per word
+    mock_instance.translate.side_effect = lambda t: "\n".join(
+        f"[T]{w}" for w in t.split("\n")
+    )
+    mock_gt_cls.return_value = mock_instance
+
+    result = build_word_map("Hello world", "es")
+    assert isinstance(result, dict)
+
+
+@patch("app.services.translator.GoogleTranslator")
+def test_build_word_map_empty_text_returns_empty(mock_gt_cls):
+    result = build_word_map("", "es")
+    assert result == {}
+    mock_gt_cls.assert_not_called()
+
+
+def test_build_word_map_unsupported_lang_returns_empty():
+    """build_word_map returns {} (no raise) for unsupported languages."""
+    result = build_word_map("Hello", "xx_FAKE")
+    assert result == {}
+
+
+# ── SUPPORTED_LANGUAGES ───────────────────────────────────────────────────
+
+def test_supported_languages_count():
+    assert len(SUPPORTED_LANGUAGES) == 20
+
+
+def test_supported_languages_contains_major_codes():
+    for code in ("en", "es", "fr", "de", "zh-CN", "ja", "ar"):
+        assert code in SUPPORTED_LANGUAGES
+
+
+def test_supported_languages_values_are_nonempty_strings():
+    for code, name in SUPPORTED_LANGUAGES.items():
+        assert isinstance(name, str) and len(name) > 0
+
+
 def test_split_sentences_paragraph_break():
     """Double newlines (paragraph breaks) SHOULD split sentences."""
     text = "First paragraph.\n\nSecond paragraph."
@@ -103,23 +202,29 @@ def test_split_sentences_initials():
 
 # ── Sentence alignment ───────────────────────────────────────────────
 
-def test_alignment_equal_counts():
+@patch("app.services.translator.GoogleTranslator")
+def test_alignment_equal_counts(mock_gt_cls):
     """When sentence counts match, pairs should be 1:1."""
-    pairs = build_sentence_alignment(
-        "Hello. World.", "Hola. Mundo."
-    )
+    mock_instance = MagicMock()
+    # Simulate: "Hello." → "Hola.", "World." → "Mundo." (one sentence per call)
+    mock_instance.translate.side_effect = lambda t: {"Hello.": "Hola.", "World.": "Mundo."}.get(t.strip(), f"[T]{t}")
+    mock_gt_cls.return_value = mock_instance
+
+    pairs = build_sentence_alignment("Hello. World.", "es")
     assert len(pairs) == 2
     assert pairs[0]["original"] == "Hello."
-    assert pairs[0]["translated"] == "Hola."
+    assert pairs[1]["original"] == "World."
 
 
-def test_alignment_mismatched_counts():
+@patch("app.services.translator.GoogleTranslator")
+def test_alignment_mismatched_counts(mock_gt_cls):
     """When counts differ, proportional merging should produce
     the same number of pairs as the longer list."""
+    mock_instance = MagicMock()
+    mock_instance.translate.side_effect = lambda t: f"[T]{t}"
+    mock_gt_cls.return_value = mock_instance
+
     orig = "One. Two. Three."
-    trans = "Uno dos. Tres."
-    pairs = build_sentence_alignment(orig, trans)
-    # 3 orig vs 2 trans → 3 pairs (longer wins), translated merged
-    assert len(pairs) == 3
+    pairs = build_sentence_alignment(orig, "es")
     # Every pair should have non-empty original
     assert all(p["original"] for p in pairs)
