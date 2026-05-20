@@ -1,8 +1,13 @@
 import { useState } from 'react'
 import { GoogleLogin } from '@react-oauth/google'
 import { loginUser, registerUser, googleLogin } from '../api'
+import type { User } from '../types'
 
-function AuthForm({ onAuth }) {
+interface AuthFormProps {
+  onAuth: (user: User) => void
+}
+
+function AuthForm({ onAuth }: AuthFormProps) {
   const [isLogin, setIsLogin] = useState(true)
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
@@ -10,22 +15,19 @@ function AuthForm({ onAuth }) {
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
 
-  const handleSubmit = async (e) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setError('')
     setLoading(true)
 
     try {
-      let data
-      if (isLogin) {
-        data = await loginUser(email, password)
-      } else {
-        data = await registerUser(name, email, password)
-      }
+      const data = isLogin
+        ? await loginUser(email, password)
+        : await registerUser(name, email, password)
       localStorage.setItem('token', data.token)
       onAuth(data.user)
     } catch (err) {
-      setError(err.message)
+      setError(err instanceof Error ? err.message : 'Authentication failed')
     } finally {
       setLoading(false)
     }
@@ -128,6 +130,10 @@ function AuthForm({ onAuth }) {
         <div className="google-btn-wrapper">
           <GoogleLogin
             onSuccess={async ({ credential }) => {
+              if (!credential) {
+                setError('Google sign-in failed')
+                return
+              }
               setError('')
               setLoading(true)
               try {
@@ -135,7 +141,7 @@ function AuthForm({ onAuth }) {
                 localStorage.setItem('token', data.token)
                 onAuth(data.user)
               } catch (err) {
-                setError(err.message)
+                setError(err instanceof Error ? err.message : 'Google login failed')
               } finally {
                 setLoading(false)
               }

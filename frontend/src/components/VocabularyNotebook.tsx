@@ -1,7 +1,15 @@
 import { useState } from 'react'
 import { exportAnki } from '../api'
+import type { VocabEntry } from '../types'
 
-function VocabularyNotebook({ vocab, onRemove, onClear, onClose }) {
+interface VocabularyNotebookProps {
+  vocab: VocabEntry[]
+  onRemove: (index: number) => void
+  onClear: () => void
+  onClose: () => void
+}
+
+function VocabularyNotebook({ vocab, onRemove, onClear, onClose }: VocabularyNotebookProps) {
   const [filter, setFilter] = useState('')
   const [ankiLoading, setAnkiLoading] = useState(false)
 
@@ -34,7 +42,7 @@ function VocabularyNotebook({ vocab, onRemove, onClear, onClose }) {
     try {
       await exportAnki(vocab)
     } catch (err) {
-      alert('Anki export failed: ' + err.message)
+      alert('Anki export failed: ' + (err instanceof Error ? err.message : 'unknown error'))
     } finally {
       setAnkiLoading(false)
     }
@@ -96,7 +104,7 @@ function VocabularyNotebook({ vocab, onRemove, onClear, onClose }) {
               <span>Language</span>
               <span></span>
             </div>
-            {filtered.map((entry, i) => {
+            {filtered.map((entry) => {
               // find actual index in original vocab for correct removal
               const realIndex = vocab.indexOf(entry)
               return (

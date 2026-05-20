@@ -1,14 +1,25 @@
 import { useState, useRef, useEffect } from 'react'
+import type { User } from '../types'
 
-function Navbar({ onLogoClick, user, onLoginClick, onHistoryClick, onLogout, theme, onToggleTheme }) {
+interface NavbarProps {
+  onLogoClick: () => void
+  user: User | null
+  onLoginClick: () => void
+  onHistoryClick: () => void
+  onLogout: () => void
+  theme: 'light' | 'dark'
+  onToggleTheme: () => void
+}
+
+function Navbar({ onLogoClick, user, onLoginClick, onHistoryClick, onLogout, theme, onToggleTheme }: NavbarProps) {
   const [menuOpen, setMenuOpen] = useState(false)
-  const menuRef = useRef(null)
+  const menuRef = useRef<HTMLDivElement>(null)
 
   // Close dropdown when clicking outside
   useEffect(() => {
     if (!menuOpen) return
-    const handleClick = (e) => {
-      if (menuRef.current && !menuRef.current.contains(e.target)) setMenuOpen(false)
+    const handleClick = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false)
     }
     document.addEventListener('mousedown', handleClick)
     return () => document.removeEventListener('mousedown', handleClick)

@@ -1,67 +1,61 @@
-import { useState, useEffect } from 'react'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { fetchHistory, fetchHistoryItem, deleteHistoryItem, clearHistory } from '../api'
+import type { TranslationResult } from '../types'
 
-function History({ onViewResult, onClose }) {
-  const [items, setItems] = useState([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState('')
+interface HistoryProps {
+  onViewResult: (data: TranslationResult) => void
+  onClose: () => void
+}
 
-  const loadHistory = async () => {
-    setLoading(true)
-    try {
-      const data = await fetchHistory()
-      setItems(data)
-    } catch (err) {
-      setError(err.message)
-    } finally {
-      setLoading(false)
-    }
+function formatDate(dateStr: string): string {
+  try {
+    const d = new Date(dateStr)
+    return d.toLocaleDateString(undefined, {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    })
+  } catch {
+    return dateStr
   }
+}
 
-  useEffect(() => { loadHistory() }, [])
+function History({ onViewResult, onClose }: HistoryProps) {
+  const queryClient = useQueryClient()
 
-  const handleView = async (id) => {
-    try {
-      const data = await fetchHistoryItem(id)
-      onViewResult(data)
-    } catch (err) {
-      setError(err.message)
-    }
-  }
+  const { data: items = [], isLoading, error } = useQuery({
+    queryKey: ['history'],
+    queryFn: fetchHistory,
+  })
 
-  const handleDelete = async (id) => {
-    try {
-      await deleteHistoryItem(id)
-      setItems((prev) => prev.filter((item) => item.id !== id))
-    } catch (err) {
-      setError(err.message)
-    }
-  }
+  const deleteMutation = useMutation({
+    mutationFn: deleteHistoryItem,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['history'] }),
+  })
 
-  const handleClear = async () => {
+  const clearMutation = useMutation({
+    mutationFn: clearHistory,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['history'] }),
+  })
+
+  const viewMutation = useMutation({
+    mutationFn: fetchHistoryItem,
+    onSuccess: (data) => onViewResult(data),
+  })
+
+  const handleClear = () => {
     if (!window.confirm('Delete all translation history?')) return
-    try {
-      await clearHistory()
-      setItems([])
-    } catch (err) {
-      setError(err.message)
-    }
+    clearMutation.mutate()
   }
 
-  const formatDate = (dateStr) => {
-    try {
-      const d = new Date(dateStr)
-      return d.toLocaleDateString(undefined, {
-        year: 'numeric',
-        month: 'short',
-        day: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit',
-      })
-    } catch {
-      return dateStr
-    }
-  }
+  const errorMessage =
+    (error instanceof Error && error.message) ||
+    (deleteMutation.error instanceof Error && deleteMutation.error.message) ||
+    (clearMutation.error instanceof Error && clearMutation.error.message) ||
+    (viewMutation.error instanceof Error && viewMutation.error.message) ||
+    ''
 
   return (
     <section className="history-section">
@@ -69,7 +63,7 @@ function History({ onViewResult, onClose }) {
         <h2><i className="fas fa-history"></i> Translation History</h2>
         <div className="history-actions">
           {items.length > 0 && (
-            <button className="btn btn-outline btn-sm" onClick={handleClear}>
+            <button className="btn btn-outline btn-sm" onClick={handleClear} disabled={clearMutation.isPending}>
               <i className="fas fa-trash"></i> Clear All
             </button>
           )}
@@ -79,16 +73,13 @@ function History({ onViewResult, onClose }) {
         </div>
       </div>
 
-      {error && (
+      {errorMessage && (
         <div className="flash flash-error">
-          <span>{error}</span>
-          <button className="flash-close" onClick={() => setError('')}>
-            <i className="fas fa-times"></i>
-          </button>
+          <span>{errorMessage}</span>
         </div>
       )}
 
-      {loading ? (
+      {isLoading ? (
         <div className="history-loading">
           <span className="spinner"></span> Loading history…
         </div>
@@ -115,13 +106,15 @@ function History({ onViewResult, onClose }) {
               <div className="history-card-actions">
                 <button
                   className="btn btn-primary btn-sm"
-                  onClick={() => handleView(item.id)}
+                  onClick={() => viewMutation.mutate(item.id)}
+                  disabled={viewMutation.isPending}
                 >
                   <i className="fas fa-eye"></i> View
                 </button>
                 <button
                   className="btn btn-outline btn-sm btn-danger"
-                  onClick={() => handleDelete(item.id)}
+                  onClick={() => deleteMutation.mutate(item.id)}
+                  disabled={deleteMutation.isPending}
                 >
                   <i className="fas fa-trash"></i>
                 </button>

@@ -1,14 +1,19 @@
 import { useState, useEffect, useRef } from 'react'
 import { fetchLanguages, translatePdf } from '../api'
+import type { LanguageMap, TranslationResult } from '../types'
 
-function UploadForm({ onResult }) {
-  const [languages, setLanguages] = useState({})
-  const [file, setFile] = useState(null)
+interface UploadFormProps {
+  onResult: (data: TranslationResult) => void
+}
+
+function UploadForm({ onResult }: UploadFormProps) {
+  const [languages, setLanguages] = useState<LanguageMap>({})
+  const [file, setFile] = useState<File | null>(null)
   const [targetLang, setTargetLang] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [dragOver, setDragOver] = useState(false)
-  const fileInputRef = useRef(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     fetchLanguages()
@@ -16,7 +21,7 @@ function UploadForm({ onResult }) {
       .catch(() => setError('Failed to load languages.'))
   }, [])
 
-  const handleDrop = (e) => {
+  const handleDrop = (e: React.DragEvent) => {
     e.preventDefault()
     setDragOver(false)
     const dropped = e.dataTransfer.files[0]
@@ -28,21 +33,21 @@ function UploadForm({ onResult }) {
     }
   }
 
-  const handleFileChange = (e) => {
-    const selected = e.target.files[0]
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const selected = e.target.files?.[0]
     if (selected) {
       setFile(selected)
       setError('')
     }
   }
 
-  const removeFile = (e) => {
+  const removeFile = (e: React.MouseEvent) => {
     e.stopPropagation()
     setFile(null)
     if (fileInputRef.current) fileInputRef.current.value = ''
   }
 
-  const handleSubmit = async (e) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!file || !targetLang) {
       setError('Please select a PDF and a target language.')
@@ -56,7 +61,7 @@ function UploadForm({ onResult }) {
       const data = await translatePdf(file, targetLang)
       onResult(data)
     } catch (err) {
-      setError(err.message)
+      setError(err instanceof Error ? err.message : 'Translation failed')
     } finally {
       setLoading(false)
     }

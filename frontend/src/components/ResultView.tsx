@@ -1,27 +1,32 @@
-import { useState, useRef, useCallback, useMemo, useEffect, memo } from 'react'
+import { useState, useRef, useCallback, useMemo, useEffect, memo, type ReactNode } from 'react'
 import { translateWord } from '../api'
 import VocabularyNotebook from './VocabularyNotebook'
 import FlashcardQuiz from './FlashcardQuiz'
+import type { TranslationResult } from '../types'
+import { useVocabulary } from '../hooks/useVocabulary'
+import { usePinnedSentences } from '../hooks/usePinnedSentences'
+import { useSyncScroll } from '../hooks/useSyncScroll'
+import { useCrossHighlight } from '../hooks/useCrossHighlight'
 
 const SENTENCES_PER_PAGE = 6
 
-// ─── localStorage helpers ───────────────────────────────────────────────
-const VOCAB_KEY = 'translator_vocabulary'
-
-function loadVocab() {
-  try {
-    return JSON.parse(localStorage.getItem(VOCAB_KEY)) || []
-  } catch {
-    return []
-  }
+interface ContextExample {
+  original: string
+  translated: string
+  index: number
 }
 
-function saveVocab(vocab) {
-  localStorage.setItem(VOCAB_KEY, JSON.stringify(vocab))
+interface TooltipState {
+  word: string
+  translated: string | null
+  x: number
+  y: number
+  flipped: boolean
+  contextExamples: ContextExample[]
 }
 
 // ─── Small helpers ──────────────────────────────────────────────────────
-function CopyButton({ targetId }) {
+function CopyButton({ targetId }: { targetId: string }) {
   const [copied, setCopied] = useState(false)
 
   const handleCopy = () => {
@@ -38,6 +43,7 @@ function CopyButton({ targetId }) {
       className="btn-copy"
       onClick={handleCopy}
       title="Copy to clipboard"
+      aria-label="Copy to clipboard"
       style={copied ? { color: 'var(--success)', borderColor: 'var(--success)' } : {}}
     >
       <i className={copied ? 'fas fa-check' : 'fas fa-copy'}></i>
@@ -46,7 +52,7 @@ function CopyButton({ targetId }) {
 }
 
 /** Render text as word-level <span> elements with data-word attrs. */
-const WordRenderer = memo(function WordRenderer({ text }) {
+const WordRenderer = memo(function WordRenderer({ text }: { text: string }) {
   const tokens = text.split(/([^\s]+)/)
   return tokens.map((token, i) => {
     if (!token || /^\s+$/.test(token)) return token
@@ -63,25 +69,22 @@ const WordRenderer = memo(function WordRenderer({ text }) {
   })
 })
 
-/** Render sentence_pairs as sentence blocks with data-sentence index. */
-const SentenceBlockRenderer = memo(function SentenceBlockRenderer({ pairs, pinnedSet }) {
-  return pairs.map((pair, idx) => {
-    const isPinned = pinnedSet.has(idx)
-    return (
-      <span
-        key={idx}
-        className={`sentence-block${isPinned ? ' pinned' : ''}`}
-        data-sentence={idx}
-        id={`sentence-${idx}`}
-      >
-        <WordRenderer text={pair} />
-      </span>
-    )
-  })
+/** Render sentence text as sentence blocks with data-sentence index. */
+const SentenceBlockRenderer = memo(function SentenceBlockRenderer({ pairs, pinnedSet }: { pairs: string[]; pinnedSet: Set<number> }) {
+  return pairs.map((pair, idx) => (
+    <span
+      key={idx}
+      className={`sentence-block${pinnedSet.has(idx) ? ' pinned' : ''}`}
+      data-sentence={idx}
+      id={`sentence-${idx}`}
+    >
+      <WordRenderer text={pair} />
+    </span>
+  ))
 })
 
 /** Render one book page — a slice of sentences for one panel side. */
-const BookPageRenderer = memo(function BookPageRenderer({ sentences, globalOffset, pinnedSet }) {
+const BookPageRenderer = memo(function BookPageRenderer({ sentences, globalOffset, pinnedSet }: { sentences: string[]; globalOffset: number; pinnedSet: Set<number> }) {
   return sentences.map((text, i) => {
     const idx = globalOffset + i
     return (
@@ -96,11 +99,16 @@ const BookPageRenderer = memo(function BookPageRenderer({ sentences, globalOffse
   })
 })
 
+interface ResultViewProps {
+  result: TranslationResult
+  onBack: () => void
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // ResultView
 // ═══════════════════════════════════════════════════════════════════════════
 
-function ResultView({ result, onBack }) {
+function ResultView({ result, onBack }: ResultViewProps) {
   const {
     target_lang,
     target_lang_code,
@@ -115,7 +123,7 @@ function ResultView({ result, onBack }) {
     sentence_pairs,
   } = result
 
-  // ── Extract sentence text arrays from pairs ──
+  // ── Sentence text arrays ──
   const originalSentences = useMemo(
     () => (sentence_pairs || []).map((p) => p.original || ''),
     [sentence_pairs],
@@ -127,15 +135,14 @@ function ResultView({ result, onBack }) {
   const hasSentences = originalSentences.length > 0
 
   // ── Find context sentences for a word ──
-  const findContextSentences = useCallback((word, isTranslatedPanel) => {
+  const findContextSentences = useCallback((word: string, isTranslatedPanel: boolean): ContextExample[] => {
     if (!sentence_pairs || !word) return []
     const needle = word.toLowerCase()
-    const matches = []
+    const matches: ContextExample[] = []
     for (let i = 0; i < sentence_pairs.length && matches.length < 3; i++) {
       const src = isTranslatedPanel
         ? (sentence_pairs[i].translated || '')
         : (sentence_pairs[i].original || '')
-      // Match as a whole word (surrounded by non-letter chars or boundaries)
       const re = new RegExp(`(?<![\\p{L}])${needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\p{L}])`, 'iu')
       if (re.test(src)) {
         matches.push({
@@ -148,41 +155,30 @@ function ResultView({ result, onBack }) {
     return matches
   }, [sentence_pairs])
 
-  // ── Word Frequency Tiers (from backend, based on real language frequency data) ──
+  // ── Word frequency tiers (from backend) ──
   const wordFreqTiers = useMemo(() => word_freq_tiers || {}, [word_freq_tiers])
   const translatedFreqTiers = useMemo(() => translated_word_freq_tiers || {}, [translated_word_freq_tiers])
 
-  // ── Pinned Sentences ──
-  const PINS_KEY = 'translator_pinned_sentences'
-  const [pinnedSentences, setPinnedSentences] = useState(() => {
-    try {
-      return new Set(JSON.parse(sessionStorage.getItem(PINS_KEY)) || [])
-    } catch { return new Set() }
-  })
+  // ── Pinned sentences (hook) ──
+  const { pinnedSentences, togglePin } = usePinnedSentences()
   const [pinsOpen, setPinsOpen] = useState(false)
   const [pinMode, setPinMode] = useState(false)
   const [freqHighlight, setFreqHighlight] = useState(false)
 
-  useEffect(() => {
-    sessionStorage.setItem(PINS_KEY, JSON.stringify([...pinnedSentences]))
-  }, [pinnedSentences])
+  // ── Refs ──
+  const originalPanelRef = useRef<HTMLDivElement>(null)
+  const translatedPanelRef = useRef<HTMLDivElement>(null)
+  const fsOrigPanelRef = useRef<HTMLDivElement>(null)
+  const fsTranPanelRef = useRef<HTMLDivElement>(null)
+  const isFullscreenRef = useRef(false)
 
-  const togglePin = useCallback((idx) => {
-    setPinnedSentences((prev) => {
-      const next = new Set(prev)
-      if (next.has(idx)) next.delete(idx)
-      else next.add(idx)
-      return next
-    })
-  }, [])
-
-  const scrollToSentence = useCallback((idx) => {
+  const scrollToSentence = useCallback((idx: number) => {
     const roots = isFullscreenRef.current
       ? [fsOrigPanelRef.current, fsTranPanelRef.current]
       : [originalPanelRef.current, translatedPanelRef.current]
     for (const root of roots) {
       if (!root) continue
-      const el = root.querySelector(`.sentence-block[data-sentence="${idx}"]`)
+      const el = root.querySelector<HTMLElement>(`.sentence-block[data-sentence="${idx}"]`)
       if (el) {
         el.scrollIntoView({ behavior: 'smooth', block: 'center' })
         el.classList.add('sentence-flash')
@@ -191,45 +187,23 @@ function ResultView({ result, onBack }) {
     }
   }, [])
 
-  // ── Right-click OR inline pin button to pin a sentence ──
-  const handleContextMenu = useCallback((e) => {
-    const sentEl = e.target.closest('.sentence-block')
+  const handleContextMenu = useCallback((e: React.MouseEvent) => {
+    const sentEl = (e.target as HTMLElement).closest<HTMLElement>('.sentence-block')
     if (!sentEl) return
     e.preventDefault()
-    const idx = parseInt(sentEl.dataset.sentence, 10)
-    if (!isNaN(idx)) togglePin(idx)
+    const idx = parseInt(sentEl.dataset.sentence ?? '', 10)
+    if (!Number.isNaN(idx)) togglePin(idx)
   }, [togglePin])
 
-  // ── Vocabulary Notebook ──
-  const [vocab, setVocab] = useState(loadVocab)
+  // ── Vocabulary (hook) ──
+  const { vocab, addToVocab, removeFromVocab, clearVocab } = useVocabulary(target_lang)
   const [notebookOpen, setNotebookOpen] = useState(false)
   const [quizOpen, setQuizOpen] = useState(false)
 
-  useEffect(() => { saveVocab(vocab) }, [vocab])
-
-  const addToVocab = useCallback((word, translated) => {
-    setVocab((prev) => {
-      const exists = prev.some((v) => v.word === word && v.translated === translated)
-      if (exists) return prev
-      return [...prev, { word, translated, targetLang: target_lang, added: Date.now() }]
-    })
-  }, [target_lang])
-
-  const removeFromVocab = useCallback((index) => {
-    setVocab((prev) => prev.filter((_, i) => i !== index))
-  }, [])
-
-  const clearVocab = useCallback(() => setVocab([]), [])
-
-  // ── Refs & tooltip ──
-  const originalPanelRef = useRef(null)
-  const translatedPanelRef = useRef(null)
-  const fsOrigPanelRef = useRef(null)
-  const fsTranPanelRef = useRef(null)
-  const isFullscreenRef = useRef(false)
-  const isFsSyncing = useRef(false)
-  const [tooltip, setTooltip] = useState(null)
+  // ── Tooltip ──
+  const [tooltip, setTooltip] = useState<TooltipState | null>(null)
   const [tooltipLoading, setTooltipLoading] = useState(false)
+  const [contextOpen, setContextOpen] = useState(false)
 
   // ── Fullscreen mode ──
   const [fullscreen, setFullscreen] = useState(false)
@@ -238,14 +212,14 @@ function ResultView({ result, onBack }) {
   // ── Book mode ──
   const [bookMode, setBookMode] = useState(false)
   const [bookPage, setBookPage] = useState(0)
-  const [bookFlipDir, setBookFlipDir] = useState(null) // 'forward' | 'backward'
+  const [bookFlipDir, setBookFlipDir] = useState<'forward' | 'backward' | null>(null)
 
   const bookSentences = useMemo(() =>
     hasSentences ? originalSentences : original_text.split(/\n{2,}/),
   [hasSentences, originalSentences, original_text])
   const totalBookPages = Math.max(1, Math.ceil(bookSentences.length / SENTENCES_PER_PAGE))
 
-  const goBookPage = useCallback((dir) => {
+  const goBookPage = useCallback((dir: 'forward' | 'backward') => {
     setBookFlipDir(dir)
     setBookPage((p) => dir === 'forward'
       ? Math.min(p + 1, totalBookPages - 1)
@@ -256,7 +230,7 @@ function ResultView({ result, onBack }) {
 
   useEffect(() => {
     if (!fullscreen || !bookMode) return
-    const handler = (e) => {
+    const handler = (e: KeyboardEvent) => {
       if (e.key === 'ArrowRight' || e.key === 'ArrowDown') goBookPage('forward')
       else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') goBookPage('backward')
     }
@@ -266,110 +240,16 @@ function ResultView({ result, onBack }) {
 
   useEffect(() => { if (bookMode) setBookPage(0) }, [bookMode])
 
-  // ── Synchronized scrolling (sentence-aligned) ──
+  // ── Synchronized scrolling (hook, used for both views) ──
   const [syncScroll, setSyncScroll] = useState(true)
-  const isSyncing = useRef(false)
-
-  useEffect(() => {
-    if (!syncScroll) return
-    const origEl = originalPanelRef.current
-    const transEl = translatedPanelRef.current
-    if (!origEl || !transEl) return
-
-    const syncFrom = (source, target) => () => {
-      if (isSyncing.current) return
-      isSyncing.current = true
-
-      // Find the topmost visible sentence in the source panel
-      const sentences = source.querySelectorAll('.sentence-block[data-sentence]')
-      const sourceTop = source.getBoundingClientRect().top
-      let topIdx = 0
-      let topOffset = 0
-
-      for (const s of sentences) {
-        const rect = s.getBoundingClientRect()
-        // First sentence whose bottom is below the panel top
-        if (rect.bottom > sourceTop) {
-          topIdx = parseInt(s.dataset.sentence, 10)
-          // How far this sentence is scrolled past the top (0 = just at top, 1 = fully scrolled past)
-          const sentHeight = rect.height || 1
-          topOffset = Math.max(0, (sourceTop - rect.top) / sentHeight)
-          break
-        }
-      }
-
-      // Find the matching sentence in the target panel
-      const match = target.querySelector(`.sentence-block[data-sentence="${topIdx}"]`)
-      if (match) {
-        const targetPanelTop = target.getBoundingClientRect().top
-        const matchRect = match.getBoundingClientRect()
-        const currentOffset = matchRect.top - targetPanelTop + target.scrollTop
-        target.scrollTop = currentOffset - target.clientTop + (topOffset * matchRect.height)
-      }
-
-      requestAnimationFrame(() => { isSyncing.current = false })
-    }
-
-    const onOrigScroll = syncFrom(origEl, transEl)
-    const onTransScroll = syncFrom(transEl, origEl)
-
-    origEl.addEventListener('scroll', onOrigScroll, { passive: true })
-    transEl.addEventListener('scroll', onTransScroll, { passive: true })
-
-    return () => {
-      origEl.removeEventListener('scroll', onOrigScroll)
-      transEl.removeEventListener('scroll', onTransScroll)
-    }
-  }, [syncScroll])
-
-  // ── Fullscreen sync scroll ──
-  useEffect(() => {
-    if (!fullscreen || !syncScroll) return
-    const origEl = fsOrigPanelRef.current
-    const transEl = fsTranPanelRef.current
-    if (!origEl || !transEl) return
-
-    const syncFrom = (source, target) => () => {
-      if (isFsSyncing.current) return
-      isFsSyncing.current = true
-      const sentences = source.querySelectorAll('.sentence-block[data-sentence]')
-      const sourceTop = source.getBoundingClientRect().top
-      let topIdx = 0
-      let topOffset = 0
-      for (const s of sentences) {
-        const rect = s.getBoundingClientRect()
-        if (rect.bottom > sourceTop) {
-          topIdx = parseInt(s.dataset.sentence, 10)
-          const sentHeight = rect.height || 1
-          topOffset = Math.max(0, (sourceTop - rect.top) / sentHeight)
-          break
-        }
-      }
-      const match = target.querySelector(`.sentence-block[data-sentence="${topIdx}"]`)
-      if (match) {
-        const targetPanelTop = target.getBoundingClientRect().top
-        const matchRect = match.getBoundingClientRect()
-        const currentOffset = matchRect.top - targetPanelTop + target.scrollTop
-        target.scrollTop = currentOffset - target.clientTop + (topOffset * matchRect.height)
-      }
-      requestAnimationFrame(() => { isFsSyncing.current = false })
-    }
-
-    const onOrigScroll = syncFrom(origEl, transEl)
-    const onTransScroll = syncFrom(transEl, origEl)
-    origEl.addEventListener('scroll', onOrigScroll, { passive: true })
-    transEl.addEventListener('scroll', onTransScroll, { passive: true })
-    return () => {
-      origEl.removeEventListener('scroll', onOrigScroll)
-      transEl.removeEventListener('scroll', onTransScroll)
-    }
-  }, [fullscreen, syncScroll])
+  useSyncScroll(originalPanelRef, translatedPanelRef, syncScroll)
+  useSyncScroll(fsOrigPanelRef, fsTranPanelRef, fullscreen && syncScroll)
 
   // ── Frequency highlighting (DOM-based to avoid re-rendering all spans) ──
   useEffect(() => {
     const freqClasses = ['freq-very-common', 'freq-common', 'freq-uncommon', 'freq-rare']
-    const origWords = document.querySelectorAll('.original-panel .hoverable-word[data-word]')
-    const transWords = document.querySelectorAll('.translated-panel .hoverable-word[data-word]')
+    const origWords = document.querySelectorAll<HTMLElement>('.original-panel .hoverable-word[data-word]')
+    const transWords = document.querySelectorAll<HTMLElement>('.translated-panel .hoverable-word[data-word]')
     if (!freqHighlight) {
       origWords.forEach((el) => el.classList.remove(...freqClasses))
       transWords.forEach((el) => el.classList.remove(...freqClasses))
@@ -378,32 +258,43 @@ function ResultView({ result, onBack }) {
     origWords.forEach((el) => {
       const w = el.dataset.word
       el.classList.remove(...freqClasses)
-      const tier = wordFreqTiers[w]
+      const tier = w ? wordFreqTiers[w] : undefined
       if (tier) el.classList.add(tier)
     })
     transWords.forEach((el) => {
       const w = el.dataset.word
       el.classList.remove(...freqClasses)
-      const tier = translatedFreqTiers[w]
+      const tier = w ? translatedFreqTiers[w] : undefined
       if (tier) el.classList.add(tier)
     })
   }, [freqHighlight, wordFreqTiers, translatedFreqTiers])
 
+  // ── Cross-panel highlight (hook) ──
+  const { handleOriginalHover, handleTranslatedHover, handleMouseOut } = useCrossHighlight(
+    word_map,
+    originalPanelRef,
+    translatedPanelRef,
+    fsOrigPanelRef,
+    fsTranPanelRef,
+    isFullscreenRef,
+  )
+
   // ── Click a word → translate tooltip + save button ──
-  const handleWordClick = useCallback(async (e) => {
-    const wordEl = e.target.closest('.hoverable-word')
+  const closeTooltip = useCallback(() => setTooltip(null), [])
+
+  const handleWordClick = useCallback(async (e: React.MouseEvent) => {
+    const wordEl = (e.target as HTMLElement).closest<HTMLElement>('.hoverable-word')
     if (!wordEl) return
 
     const normalized = wordEl.dataset.word
     if (!normalized) return
-    const displayWord = wordEl.textContent.replace(/[^\p{L}\p{N}'-]/gu, '').trim()
+    const displayWord = (wordEl.textContent || '').replace(/[^\p{L}\p{N}'-]/gu, '').trim()
     if (!displayWord) return
 
-    const panelEl = wordEl.closest('[data-panel]')
+    const panelEl = wordEl.closest<HTMLElement>('[data-panel]')
     const isTranslated = panelEl?.dataset.panel === 'translated'
     const rect = wordEl.getBoundingClientRect()
     const x = rect.left + rect.width / 2
-    // Flip tooltip below the word when it's near the top of the viewport
     const flipped = rect.top < 120
     const yPos = flipped ? rect.bottom : rect.top
 
@@ -413,7 +304,6 @@ function ResultView({ result, onBack }) {
     setTooltipLoading(true)
     setContextOpen(false)
 
-    // Reverse direction when clicking in the translated panel
     const toLang = isTranslated ? (source_lang_code || 'en') : target_lang_code
     const fromLang = isTranslated ? target_lang_code : 'auto'
 
@@ -427,134 +317,32 @@ function ResultView({ result, onBack }) {
     }
   }, [target_lang_code, source_lang_code, findContextSentences])
 
-  const handlePanelClick = useCallback((e) => {
-    // In pin mode, clicking a sentence pins/unpins it
+  const handlePanelClick = useCallback((e: React.MouseEvent) => {
     if (pinMode) {
-      const sentEl = e.target.closest('.sentence-block')
+      const sentEl = (e.target as HTMLElement).closest<HTMLElement>('.sentence-block')
       if (sentEl) {
-        const idx = parseInt(sentEl.dataset.sentence, 10)
-        if (!isNaN(idx)) togglePin(idx)
+        const idx = parseInt(sentEl.dataset.sentence ?? '', 10)
+        if (!Number.isNaN(idx)) togglePin(idx)
       }
       return
     }
-    // Otherwise handle word click for tooltip
     handleWordClick(e)
   }, [pinMode, togglePin, handleWordClick])
 
-  const closeTooltip = () => setTooltip(null)
-
-  // ── Reverse word map ──
-  const reverseMap = useMemo(() => {
-    const rm = {}
-    if (!word_map) return rm
-    for (const [orig, trans] of Object.entries(word_map)) {
-      if (!rm[trans]) rm[trans] = new Set()
-      rm[trans].add(orig)
+  // ── Escape closes tooltip, then exits book mode, then exits fullscreen ──
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      if (tooltip) { closeTooltip(); return }
+      if (bookMode) { setBookMode(false); return }
+      if (fullscreen) setFullscreen(false)
     }
-    return rm
-  }, [word_map])
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [tooltip, bookMode, fullscreen, closeTooltip])
 
-  // ── Cross-panel word + sentence highlight ──
-  // Track highlighted elements to avoid expensive full-DOM scans on every hover
-  const highlightedEls = useRef([])
-  const lastHoveredWord = useRef(null)
-
-  const clearHighlights = useCallback(() => {
-    const els = highlightedEls.current
-    for (let i = els.length - 1; i >= 0; i--) {
-      const [el, cls] = els[i]
-      el.classList.remove(cls)
-    }
-    highlightedEls.current = []
-  }, [])
-
-  const handleMouseOut = useCallback(() => {
-    lastHoveredWord.current = null
-    clearHighlights()
-  }, [clearHighlights])
-
-  const addHighlight = useCallback((el, cls) => {
-    el.classList.add(cls)
-    highlightedEls.current.push([el, cls])
-  }, [])
-
-  const highlightSentence = useCallback((el) => {
-    const sentenceEl = el.closest('.sentence-block')
-    if (!sentenceEl) return
-    const idx = sentenceEl.dataset.sentence
-    addHighlight(sentenceEl, 'sentence-highlight')
-    const panels = isFullscreenRef.current
-      ? [fsOrigPanelRef.current, fsTranPanelRef.current]
-      : [originalPanelRef.current, translatedPanelRef.current]
-    for (const panel of panels) {
-      if (!panel) continue
-      const match = panel.querySelector(`.sentence-block[data-sentence="${idx}"]`)
-      if (match && match !== sentenceEl) addHighlight(match, 'sentence-highlight')
-    }
-  }, [addHighlight])
-
-  const highlightMatchingWords = useCallback((panelRef, targetWord, sentenceIdx) => {
-    if (!targetWord || !panelRef.current) return
-    // Scope to the matching sentence in the other panel
-    const root = sentenceIdx != null
-      ? panelRef.current.querySelector(`.sentence-block[data-sentence="${sentenceIdx}"]`)
-      : panelRef.current
-    if (!root) return
-    const escapedWord = CSS.escape(targetWord)
-    const exact = root.querySelectorAll(`[data-word="${escapedWord}"]`)
-    if (exact.length) {
-      exact.forEach((el) => addHighlight(el, 'word-cross-highlight'))
-      return
-    }
-    const words = targetWord.split(/\s+/)
-    words.forEach((w) => {
-      if (w.length < 2) return
-      root.querySelectorAll(`[data-word="${CSS.escape(w)}"]`)
-        .forEach((el) => addHighlight(el, 'word-cross-highlight'))
-    })
-  }, [addHighlight])
-
-  const handleOriginalHover = useCallback((e) => {
-    const wordEl = e.target.closest('.hoverable-word')
-    if (!wordEl || wordEl === lastHoveredWord.current) return
-    lastHoveredWord.current = wordEl
-    clearHighlights()
-    highlightSentence(wordEl)
-    addHighlight(wordEl, 'word-cross-highlight')
-    const word = wordEl.dataset.word
-    const sentEl = wordEl.closest('.sentence-block')
-    const sentIdx = sentEl ? sentEl.dataset.sentence : null
-    const translated = word_map?.[word]
-    if (translated) {
-      const ref = isFullscreenRef.current ? fsTranPanelRef : translatedPanelRef
-      highlightMatchingWords(ref, translated, sentIdx)
-    }
-  }, [word_map, clearHighlights, highlightSentence, highlightMatchingWords, addHighlight])
-
-  const handleTranslatedHover = useCallback((e) => {
-    const wordEl = e.target.closest('.hoverable-word')
-    if (!wordEl || wordEl === lastHoveredWord.current) return
-    lastHoveredWord.current = wordEl
-    clearHighlights()
-    highlightSentence(wordEl)
-    addHighlight(wordEl, 'word-cross-highlight')
-    const word = wordEl.dataset.word
-    const sentEl = wordEl.closest('.sentence-block')
-    const sentIdx = sentEl ? sentEl.dataset.sentence : null
-    const originals = reverseMap[word]
-    if (originals) {
-      const ref = isFullscreenRef.current ? fsOrigPanelRef : originalPanelRef
-      originals.forEach((orig) => {
-        highlightMatchingWords(ref, orig, sentIdx)
-      })
-    }
-  }, [reverseMap, clearHighlights, highlightSentence, highlightMatchingWords, addHighlight])
-
-  // ── Tooltip JSX ──
-  const [contextOpen, setContextOpen] = useState(false)
-
-  /** Highlight occurrences of `word` inside `text` using <mark> */
-  const highlightWordInText = useCallback((text, word) => {
+  /** Highlight occurrences of `word` inside `text` using <mark>. */
+  const highlightWordInText = useCallback((text: string, word: string | null): ReactNode => {
     if (!word || !text) return text
     try {
       const escaped = word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
@@ -575,8 +363,10 @@ function ResultView({ result, onBack }) {
       <div
         className={`word-tooltip word-tooltip-fixed${tooltip.flipped ? ' word-tooltip-flipped' : ''}`}
         style={{ left: tooltip.x, top: tooltip.y }}
+        role="dialog"
+        aria-label={`Translation of ${tooltip.word}`}
       >
-        <button className="word-tooltip-close" onClick={closeTooltip}>
+        <button className="word-tooltip-close" onClick={closeTooltip} aria-label="Close">
           <i className="fas fa-times"></i>
         </button>
         <div className="word-tooltip-original">{tooltip.word}</div>
@@ -591,7 +381,7 @@ function ResultView({ result, onBack }) {
               title="Save to vocabulary notebook"
               onClick={(e) => {
                 e.stopPropagation()
-                addToVocab(tooltip.word, tooltip.translated)
+                if (tooltip.translated) addToVocab(tooltip.word, tooltip.translated)
                 closeTooltip()
               }}
             >
@@ -599,7 +389,7 @@ function ResultView({ result, onBack }) {
             </button>
           </>
         )}
-        {tooltip.contextExamples && tooltip.contextExamples.length > 0 && (
+        {tooltip.contextExamples.length > 0 && (
           <div className="word-tooltip-context">
             <button
               className="word-tooltip-context-toggle"
@@ -629,7 +419,6 @@ function ResultView({ result, onBack }) {
     <>
       {/* ──── Header ──── */}
       <section className="result-header">
-        {/* CEFR Difficulty Badges */}
         {(original_cefr || translated_cefr) && (
           <div className="cefr-bar">
             {original_cefr && (
@@ -724,7 +513,7 @@ function ResultView({ result, onBack }) {
         <div className="pins-drawer">
           <div className="pins-drawer-header">
             <h3><i className="fas fa-thumbtack"></i> Pinned Sentences</h3>
-            <button className="btn-close-drawer" onClick={() => setPinsOpen(false)}>
+            <button className="btn-close-drawer" onClick={() => setPinsOpen(false)} aria-label="Close pinned sentences">
               <i className="fas fa-times"></i>
             </button>
           </div>
@@ -740,7 +529,7 @@ function ResultView({ result, onBack }) {
                       <span className="pins-list-number">#{idx + 1}</span>
                       <span className="pins-list-text">{text.length > 80 ? text.slice(0, 80) + '…' : text}</span>
                     </button>
-                    <button className="pins-list-remove" onClick={() => togglePin(idx)} title="Unpin">
+                    <button className="pins-list-remove" onClick={() => togglePin(idx)} title="Unpin" aria-label="Unpin sentence">
                       <i className="fas fa-times"></i>
                     </button>
                   </li>
@@ -766,7 +555,7 @@ function ResultView({ result, onBack }) {
         </div>
       )}
 
-      {/* ════ SIDE-BY-SIDE VIEW WITH SENTENCE BORDERS ════ */}
+      {/* ════ SIDE-BY-SIDE VIEW ════ */}
       <section className="translation-container">
         <div className="text-panel original-panel">
           <div className="panel-header">
@@ -787,8 +576,7 @@ function ResultView({ result, onBack }) {
           >
             {hasSentences
               ? <SentenceBlockRenderer pairs={originalSentences} pinnedSet={pinnedSentences} />
-              : <WordRenderer text={original_text} />
-            }
+              : <WordRenderer text={original_text} />}
           </div>
         </div>
 
@@ -811,8 +599,7 @@ function ResultView({ result, onBack }) {
           >
             {hasSentences
               ? <SentenceBlockRenderer pairs={translatedSentences} pinnedSet={pinnedSentences} />
-              : <WordRenderer text={translated_text} />
-            }
+              : <WordRenderer text={translated_text} />}
           </div>
         </div>
       </section>
@@ -822,7 +609,7 @@ function ResultView({ result, onBack }) {
 
       {/* ──── Fullscreen Mode ──── */}
       {fullscreen && (
-        <div className="fullscreen-overlay">
+        <div className="fullscreen-overlay" role="dialog" aria-modal="true" aria-label="Fullscreen reader">
           <div className="fullscreen-modal">
 
             {/* ── Toolbar ── */}
@@ -861,7 +648,7 @@ function ResultView({ result, onBack }) {
                 <button className={`btn-notebook-toggle ${bookMode ? 'active' : ''}`} onClick={() => setBookMode((v) => !v)} title="Book reading mode">
                   <i className="fas fa-book-open"></i> Book
                 </button>
-                <button className="btn-expand" onClick={() => setFullscreen(false)} title="Exit fullscreen">
+                <button className="btn-expand" onClick={() => setFullscreen(false)} title="Exit fullscreen" aria-label="Exit fullscreen">
                   <i className="fas fa-compress"></i> Exit
                 </button>
               </div>
@@ -873,7 +660,7 @@ function ResultView({ result, onBack }) {
                 <div className="pins-drawer">
                   <div className="pins-drawer-header">
                     <h3><i className="fas fa-thumbtack"></i> Pinned Sentences</h3>
-                    <button className="btn-close-drawer" onClick={() => setPinsOpen(false)}><i className="fas fa-times"></i></button>
+                    <button className="btn-close-drawer" onClick={() => setPinsOpen(false)} aria-label="Close pinned sentences"><i className="fas fa-times"></i></button>
                   </div>
                   {pinnedSentences.size === 0 ? (
                     <p className="pins-empty">No pinned sentences yet. Right-click any sentence to pin it.</p>
@@ -887,7 +674,7 @@ function ResultView({ result, onBack }) {
                               <span className="pins-list-number">#{idx + 1}</span>
                               <span className="pins-list-text">{text.length > 80 ? text.slice(0, 80) + '…' : text}</span>
                             </button>
-                            <button className="pins-list-remove" onClick={() => togglePin(idx)}>
+                            <button className="pins-list-remove" onClick={() => togglePin(idx)} aria-label="Unpin sentence">
                               <i className="fas fa-times"></i>
                             </button>
                           </li>
@@ -962,11 +749,11 @@ function ResultView({ result, onBack }) {
                 </div>
 
                 <div className="book-nav">
-                  <button className="book-nav-btn" onClick={() => goBookPage('backward')} disabled={bookPage === 0} title="Previous page (←)">
+                  <button className="book-nav-btn" onClick={() => goBookPage('backward')} disabled={bookPage === 0} title="Previous page (←)" aria-label="Previous page">
                     <i className="fas fa-chevron-left"></i>
                   </button>
                   <span className="book-nav-info">Page {bookPage + 1} / {totalBookPages}</span>
-                  <button className="book-nav-btn" onClick={() => goBookPage('forward')} disabled={bookPage >= totalBookPages - 1} title="Next page (→)">
+                  <button className="book-nav-btn" onClick={() => goBookPage('forward')} disabled={bookPage >= totalBookPages - 1} title="Next page (→)" aria-label="Next page">
                     <i className="fas fa-chevron-right"></i>
                   </button>
                 </div>
@@ -1017,11 +804,11 @@ function ResultView({ result, onBack }) {
                 </div>
               </div>
             </div>
-            )}{/* end book mode ternary */}
-
-            {/* Tooltip inside fullscreen */}
-            {tooltipJsx}
+            )}
           </div>
+
+          {/* Tooltip (fullscreen view) */}
+          {tooltipJsx}
         </div>
       )}
     </>

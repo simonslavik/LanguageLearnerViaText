@@ -10,7 +10,7 @@ vi.mock('../api', () => ({
 
 beforeEach(() => {
   vi.clearAllMocks()
-  api.fetchLanguages.mockResolvedValue({ es: 'Spanish', fr: 'French' })
+  vi.mocked(api.fetchLanguages).mockResolvedValue({ es: 'Spanish', fr: 'French' })
 })
 
 describe('UploadForm', () => {
@@ -30,17 +30,19 @@ describe('UploadForm', () => {
   })
 
   it('shows error when no language selected on submit', async () => {
-    render(<UploadForm onResult={() => {}} />)
+    const { container } = render(<UploadForm onResult={() => {}} />)
     await waitFor(() => screen.getByText('Spanish'))
 
-    const submitBtn = screen.getByRole('button', { name: /translate/i })
-    fireEvent.click(submitBtn)
+    // Submit the form directly: an empty `required` <select> makes jsdom block
+    // the native submit event, so we exercise the component's own guard.
+    const form = container.querySelector('form') as HTMLFormElement
+    fireEvent.submit(form)
 
     expect(await screen.findByText(/please select a pdf/i)).toBeInTheDocument()
   })
 
   it('shows error when languages fail to load', async () => {
-    api.fetchLanguages.mockRejectedValue(new Error('Network error'))
+    vi.mocked(api.fetchLanguages).mockRejectedValue(new Error('Network error'))
     render(<UploadForm onResult={() => {}} />)
     await waitFor(() => {
       expect(screen.getByText(/failed to load languages/i)).toBeInTheDocument()

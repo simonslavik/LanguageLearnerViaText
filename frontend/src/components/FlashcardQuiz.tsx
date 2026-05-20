@@ -1,40 +1,26 @@
 import { useState, useCallback, useMemo, useEffect, useRef } from 'react'
+import type { VocabEntry } from '../types'
+import {
+  LEITNER_INTERVALS,
+  type SrsData,
+  boxDistribution,
+  getCardKey,
+  isDue,
+  reviewCard,
+} from '../lib/srs'
 
-// ─── Leitner spaced-repetition helpers ──────────────────────────────────
-// Box 1 → review daily  (interval: 0 — always due)
-// Box 2 → review every 2 days
-// Box 3 → review every 4 days
-// Box 4 → review every 8 days
-// Box 5 → review every 16 days  (mastered)
-
-const LEITNER_INTERVALS = [0, 0, 2, 4, 8, 16] // index = box number
-const MAX_BOX = 5
 const SRS_KEY = 'translator_srs_data'
 
-function loadSrs() {
+function loadSrs(): SrsData {
   try {
-    return JSON.parse(localStorage.getItem(SRS_KEY)) || {}
+    return (JSON.parse(localStorage.getItem(SRS_KEY) || 'null') as SrsData) || {}
   } catch {
     return {}
   }
 }
 
-function saveSrs(data) {
+function saveSrs(data: SrsData) {
   localStorage.setItem(SRS_KEY, JSON.stringify(data))
-}
-
-function daysSince(timestamp) {
-  return Math.floor((Date.now() - timestamp) / (1000 * 60 * 60 * 24))
-}
-
-function getCardKey(entry) {
-  return `${entry.word}::${entry.translated}`
-}
-
-function isDue(srsEntry) {
-  if (!srsEntry) return true
-  const interval = LEITNER_INTERVALS[srsEntry.box] || 0
-  return daysSince(srsEntry.lastReview) >= interval
 }
 
 // ─── Quiz modes ─────────────────────────────────────────────────────────
@@ -42,40 +28,49 @@ const MODES = {
   FLASHCARD: 'flashcard',
   MULTIPLE_CHOICE: 'multiple_choice',
   TYPING: 'typing',
-}
+} as const
 
-const MODE_LABELS = {
+type Mode = (typeof MODES)[keyof typeof MODES]
+type Direction = 'wordToTranslation' | 'translationToWord'
+type TypingResult = null | 'correct' | 'incorrect'
+
+const MODE_LABELS: Record<Mode, string> = {
   [MODES.FLASHCARD]: 'Flashcards',
   [MODES.MULTIPLE_CHOICE]: 'Multiple Choice',
   [MODES.TYPING]: 'Type Answer',
 }
 
-const MODE_ICONS = {
+const MODE_ICONS: Record<Mode, string> = {
   [MODES.FLASHCARD]: 'fas fa-clone',
   [MODES.MULTIPLE_CHOICE]: 'fas fa-list-ol',
   [MODES.TYPING]: 'fas fa-keyboard',
+}
+
+interface FlashcardQuizProps {
+  vocab: VocabEntry[]
+  onClose: () => void
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
 // FlashcardQuiz
 // ═══════════════════════════════════════════════════════════════════════════
 
-function FlashcardQuiz({ vocab, onClose }) {
-  const [srsData, setSrsData] = useState(loadSrs)
-  const [mode, setMode] = useState(MODES.FLASHCARD)
+function FlashcardQuiz({ vocab, onClose }: FlashcardQuizProps) {
+  const [srsData, setSrsData] = useState<SrsData>(loadSrs)
+  const [mode, setMode] = useState<Mode>(MODES.FLASHCARD)
   const [currentIndex, setCurrentIndex] = useState(0)
   const [flipped, setFlipped] = useState(false)
   const [sessionStats, setSessionStats] = useState({ correct: 0, incorrect: 0 })
   const [sessionDone, setSessionDone] = useState(false)
   const [practiceAll, setPracticeAll] = useState(false)
-  const [direction, setDirection] = useState('wordToTranslation') // or 'translationToWord'
+  const [direction, setDirection] = useState<Direction>('wordToTranslation')
 
   // Multiple choice state
-  const [mcSelected, setMcSelected] = useState(null)
+  const [mcSelected, setMcSelected] = useState<string | null>(null)
 
   // Typing state
   const [typedAnswer, setTypedAnswer] = useState('')
-  const [typingResult, setTypingResult] = useState(null) // null | 'correct' | 'incorrect'
+  const [typingResult, setTypingResult] = useState<TypingResult>(null)
 
   // Persist SRS data
   useEffect(() => { saveSrs(srsData) }, [srsData])
@@ -83,21 +78,18 @@ function FlashcardQuiz({ vocab, onClose }) {
   // ── Build the session queue: only due cards (or all if practiceAll) ──
   const dueCards = useMemo(() => {
     if (practiceAll) return [...vocab]
-    return vocab.filter((entry) => {
-      const key = getCardKey(entry)
-      return isDue(srsData[key])
-    })
+    return vocab.filter((entry) => isDue(srsData[getCardKey(entry)]))
   }, [vocab, srsData, practiceAll])
 
   // ── Current card ──
   const card = dueCards[currentIndex] || null
 
-  const getPrompt = useCallback((c) => {
+  const getPrompt = useCallback((c: VocabEntry | null) => {
     if (!c) return ''
     return direction === 'wordToTranslation' ? c.word : c.translated
   }, [direction])
 
-  const getAnswer = useCallback((c) => {
+  const getAnswer = useCallback((c: VocabEntry | null) => {
     if (!c) return ''
     return direction === 'wordToTranslation' ? c.translated : c.word
   }, [direction])
@@ -119,7 +111,6 @@ function FlashcardQuiz({ vocab, onClose }) {
   const prevIndexRef = useRef(currentIndex)
   if (prevIndexRef.current !== currentIndex) {
     prevIndexRef.current = currentIndex
-    // These are safe synchronous resets before render
     if (typedAnswer !== '') setTypedAnswer('')
     if (typingResult !== null) setTypingResult(null)
     if (flipped) setFlipped(false)
@@ -127,19 +118,10 @@ function FlashcardQuiz({ vocab, onClose }) {
   }
 
   // ── SRS promotion / demotion ──
-  const recordAnswer = useCallback((isCorrect) => {
+  const recordAnswer = useCallback((isCorrect: boolean) => {
     if (!card) return
     const key = getCardKey(card)
-    setSrsData((prev) => {
-      const current = prev[key] || { box: 1, lastReview: Date.now() }
-      const newBox = isCorrect
-        ? Math.min(current.box + 1, MAX_BOX)
-        : 1 // wrong → back to box 1
-      return {
-        ...prev,
-        [key]: { box: newBox, lastReview: Date.now() },
-      }
-    })
+    setSrsData((prev) => reviewCard(prev, key, isCorrect))
     setSessionStats((prev) => ({
       correct: prev.correct + (isCorrect ? 1 : 0),
       incorrect: prev.incorrect + (isCorrect ? 0 : 1),
@@ -168,8 +150,8 @@ function FlashcardQuiz({ vocab, onClose }) {
   }
 
   // ── MC handlers ──
-  const handleMcSelect = (option) => {
-    if (mcSelected !== null) return // already answered
+  const handleMcSelect = (option: string) => {
+    if (mcSelected !== null) return
     setMcSelected(option)
     const correct = option === getAnswer(card)
     recordAnswer(correct)
@@ -177,11 +159,10 @@ function FlashcardQuiz({ vocab, onClose }) {
   }
 
   // ── Typing handlers ──
-  const handleTypingSubmit = (e) => {
+  const handleTypingSubmit = (e: React.FormEvent) => {
     e.preventDefault()
     if (typingResult !== null) return
-    const correct =
-      typedAnswer.trim().toLowerCase() === getAnswer(card).toLowerCase()
+    const correct = typedAnswer.trim().toLowerCase() === getAnswer(card).toLowerCase()
     setTypingResult(correct ? 'correct' : 'incorrect')
     recordAnswer(correct)
   }
@@ -201,16 +182,7 @@ function FlashcardQuiz({ vocab, onClose }) {
   }
 
   // ── Box stats ──
-  const boxCounts = useMemo(() => {
-    const counts = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0, unstarted: 0 }
-    vocab.forEach((entry) => {
-      const key = getCardKey(entry)
-      const srs = srsData[key]
-      if (!srs) counts.unstarted++
-      else counts[srs.box] = (counts[srs.box] || 0) + 1
-    })
-    return counts
-  }, [vocab, srsData])
+  const boxCounts = useMemo(() => boxDistribution(vocab, srsData), [vocab, srsData])
 
   // ═════════════════════════════════════════════════════════════════════
   // NO CARDS
@@ -334,7 +306,7 @@ function FlashcardQuiz({ vocab, onClose }) {
       {/* Settings bar */}
       <div className="flashcard-settings">
         <div className="mode-selector">
-          {Object.entries(MODES).map(([, value]) => (
+          {Object.values(MODES).map((value) => (
             <button
               key={value}
               className={`mode-btn ${mode === value ? 'active' : ''}`}
@@ -360,7 +332,7 @@ function FlashcardQuiz({ vocab, onClose }) {
       <div className="flashcard-progress-bar">
         <div
           className="flashcard-progress-fill"
-          style={{ width: `${((currentIndex) / dueCards.length) * 100}%` }}
+          style={{ width: `${(currentIndex / dueCards.length) * 100}%` }}
         />
       </div>
 
