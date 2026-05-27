@@ -6,6 +6,8 @@ import sys
 # Ensure the project root is on sys.path so `app` is importable
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+from contextlib import asynccontextmanager
+
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -24,10 +26,18 @@ from app.routes.history import router as history_router
 # Ensure the upload folder exists
 os.makedirs(settings.UPLOAD_FOLDER, exist_ok=True)
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await connect_db()
+    yield
+    await close_db()
+
+
 app = FastAPI(
     title="PDF Translator",
     description="Upload a PDF and get an instant side-by-side translation.",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 app.state.limiter = limiter
@@ -38,16 +48,6 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 async def health_check():
     """Simple liveness probe used by Docker healthcheck and monitoring."""
     return {"status": "ok"}
-
-
-@app.on_event("startup")
-async def startup():
-    await connect_db()
-
-
-@app.on_event("shutdown")
-async def shutdown():
-    await close_db()
 
 
 # CORS — restrict to configured origins
@@ -72,13 +72,23 @@ if os.path.isdir(DIST_DIR):
     # Serve static assets (JS, CSS, images)
     app.mount("/assets", StaticFiles(directory=os.path.join(DIST_DIR, "assets")), name="assets")
 
+    _DIST_ROOT = os.path.realpath(DIST_DIR)
+
     @app.get("/{full_path:path}")
     async def serve_react(full_path: str):
-        """Serve the React SPA for any non-API route."""
-        file_path = os.path.join(DIST_DIR, full_path)
-        if full_path and os.path.isfile(file_path):
-            return FileResponse(file_path)
-        return FileResponse(os.path.join(DIST_DIR, "index.html"))
+        """Serve the React SPA for any non-API route.
+
+        The requested path is resolved and confirmed to stay within the build
+        directory before being served, to prevent path-traversal escapes.
+        """
+        if full_path:
+            resolved = os.path.realpath(os.path.join(_DIST_ROOT, full_path))
+            if (
+                (resolved == _DIST_ROOT or resolved.startswith(_DIST_ROOT + os.sep))
+                and os.path.isfile(resolved)
+            ):
+                return FileResponse(resolved)
+        return FileResponse(os.path.join(_DIST_ROOT, "index.html"))
 
 
 if __name__ == "__main__":

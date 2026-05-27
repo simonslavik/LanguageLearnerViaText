@@ -6,7 +6,7 @@ import logging
 import os
 import tempfile
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 import genanki
 from bson import ObjectId
@@ -122,7 +122,7 @@ async def translate(
             history_doc = {
                 **result,
                 "user_id": ObjectId(user["_id"]),
-                "created_at": datetime.utcnow().isoformat(),
+                "created_at": datetime.now(timezone.utc).isoformat(),
             }
             insert_result = await db.history.insert_one(history_doc)
             result["history_id"] = str(insert_result.inserted_id)
@@ -148,7 +148,9 @@ async def translate(
 
 
 @router.post("/translate-word")
+@limiter.limit("60/minute")
 async def translate_word(
+    request: Request,
     word: str = Form(...),
     target_lang: str = Form(...),
     source_lang: str = Form("auto"),
@@ -197,7 +199,8 @@ class AnkiExportRequest(BaseModel):
 
 
 @router.post("/export-anki")
-async def export_anki(payload: AnkiExportRequest):
+@limiter.limit("20/minute")
+async def export_anki(request: Request, payload: AnkiExportRequest):
     """Generate an Anki .apkg deck from the user's vocabulary list."""
     if not payload.vocab:
         raise HTTPException(status_code=400, detail="No vocabulary to export.")

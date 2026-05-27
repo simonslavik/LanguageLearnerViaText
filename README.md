@@ -5,9 +5,15 @@
 ![Python](https://img.shields.io/badge/Python-3.10+-blue?logo=python)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688?logo=fastapi)
 ![React](https://img.shields.io/badge/React-19-61DAFB?logo=react)
+![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6?logo=typescript)
 ![Vite](https://img.shields.io/badge/Vite-8-646CFF?logo=vite)
 ![MongoDB](https://img.shields.io/badge/MongoDB-7-47A248?logo=mongodb)
 ![License](https://img.shields.io/badge/License-MIT-green)
+
+<!-- TODO: replace <your-username> with your GitHub username so these render -->
+[![CI](https://github.com/<your-username>/Translation-WebApp/actions/workflows/ci.yml/badge.svg)](https://github.com/<your-username>/Translation-WebApp/actions/workflows/ci.yml)
+
+**Live demo:** _<!-- TODO: paste your deployed URL here, e.g. https://translation-webapp.vercel.app -->_
 
 ---
 
@@ -22,9 +28,10 @@
 7. [Environment Variables](#environment-variables)
 8. [API Reference](#api-reference)
 9. [Running Tests](#running-tests)
-10. [Design Decisions](#design-decisions)
-11. [Roadmap](#roadmap)
-12. [License](#license)
+10. [Decisions & Tradeoffs](#decisions--tradeoffs)
+11. [Known Limitations](#known-limitations)
+12. [Roadmap](#roadmap)
+13. [License](#license)
 
 ---
 
@@ -100,11 +107,15 @@ The project demonstrates end-to-end ownership of a production-grade web applicat
 | Authentication | **python-jose** + **passlib[bcrypt]** | JWT tokens, password hashing |
 | Google OAuth | **httpx** | Verifies Google ID tokens server-side |
 | Frontend framework | **React 19** | Component-based SPA |
+| Language | **TypeScript (strict)** | Type-safe domain model end-to-end; `tsc` gates the build |
 | Build tool | **Vite 8** | Dev server with HMR, production build |
+| Routing | **React Router 7** | URL-driven navigation, deep links, browser history |
+| Server state | **TanStack Query 5** | History fetching with caching + mutation invalidation |
 | Google login UI | **@react-oauth/google** | Pre-built Google button + credential flow |
 | Styling | **CSS3 custom properties** | Theme tokens, responsive layout |
 | Icons | **Font Awesome 6** | Toolbar and button icons |
-| Testing | **pytest** | Backend unit tests |
+| Testing | **pytest** (backend) · **Vitest + Testing Library** (frontend) | Unit + component tests |
+| CI | **GitHub Actions** | Typecheck, lint, test, build on every push/PR |
 
 ---
 
@@ -121,8 +132,8 @@ FastAPI  (Uvicorn :5000)
   ├── POST /api/auth/login      ← email/password login
   ├── POST /api/auth/google     ← Google ID-token verification
   ├── GET  /api/history         ← user translation history (JWT-gated)
-  ├── POST /api/word            ← single-word reverse translation
-  └── GET  /api/export-anki     ← Anki deck download
+  ├── POST /api/translate-word  ← single-word reverse translation
+  └── POST /api/export-anki     ← Anki deck download
        │
        ├── services/pdf_parser.py   → PyPDF2 text extraction
        ├── services/translator.py   → sentence alignment, word map, deep-translator
@@ -153,26 +164,39 @@ Translation-WebApp/
 │   └── utils/
 │       └── helpers.py               # File extension validation, misc utilities
 │
-├── frontend/                        # React + Vite SPA
+├── frontend/                        # React + Vite SPA (TypeScript)
 │   ├── src/
-│   │   ├── main.jsx                 # Entry point, GoogleOAuthProvider wrapper
-│   │   ├── App.jsx                  # Routing, auth state, theme toggle
+│   │   ├── main.tsx                 # Entry: Router, QueryClient, GoogleOAuth, ErrorBoundary
+│   │   ├── App.tsx                  # Route table, auth state, theme toggle
 │   │   ├── App.css                  # Global styles and CSS custom properties
-│   │   ├── api.js                   # Fetch wrappers for all backend endpoints
-│   │   └── components/
-│   │       ├── Navbar.jsx           # Top navigation, auth status, theme switch
-│   │       ├── UploadForm.jsx       # File drop-zone, language picker, translate button
-│   │       ├── ResultView.jsx       # Side-by-side view, fullscreen, book mode, all tools
-│   │       ├── AuthForm.jsx         # Login / register form + Google button
-│   │       ├── History.jsx          # User translation history list
-│   │       ├── VocabularyNotebook.jsx   # Saved words manager
-│   │       └── FlashcardQuiz.jsx    # Flip-card study mode
-│   └── vite.config.js               # Dev proxy /api → localhost:5000
+│   │   ├── api.ts                   # Typed request() wrapper + endpoint functions
+│   │   ├── types.ts                 # Shared domain types (TranslationResult, VocabEntry…)
+│   │   ├── components/
+│   │   │   ├── Navbar.tsx           # Top navigation, auth status, theme switch
+│   │   │   ├── UploadForm.tsx       # File drop-zone, language picker, translate button
+│   │   │   ├── ResultView.tsx       # Side-by-side view, fullscreen, book mode (orchestration)
+│   │   │   ├── AuthForm.tsx         # Login / register form + Google button
+│   │   │   ├── History.tsx          # Translation history (TanStack Query)
+│   │   │   ├── VocabularyNotebook.tsx   # Saved words manager
+│   │   │   ├── FlashcardQuiz.tsx    # Spaced-repetition study modes
+│   │   │   └── ErrorBoundary.tsx    # Top-level render-error fallback
+│   │   ├── hooks/                   # Reusable logic extracted from ResultView
+│   │   │   ├── useSyncScroll.ts     # Sentence-aligned panel scroll sync
+│   │   │   ├── useCrossHighlight.ts # Cross-panel word/sentence highlighting
+│   │   │   ├── usePinnedSentences.ts# Pinned-sentence state (sessionStorage)
+│   │   │   └── useVocabulary.ts     # Vocabulary notebook state (localStorage)
+│   │   ├── lib/
+│   │   │   └── srs.ts               # Pure Leitner spaced-repetition logic (unit-tested)
+│   │   └── __tests__/ · *.test.ts(x)# Vitest unit + component tests
+│   ├── tsconfig*.json               # Strict TypeScript config
+│   └── vite.config.ts               # Dev proxy /api → :5000, Vitest config
 │
-├── tests/
-│   ├── test_api.py                  # Translation endpoint tests
-│   ├── test_pdf_parser.py           # PDF parsing unit tests
-│   └── test_translator.py           # Translation service tests
+├── tests/                           # Backend pytest suite (DB mocked via conftest.py)
+│   ├── test_api.py · test_translator.py · test_pdf_parser.py
+│   ├── test_auth_service.py · test_auth_routes.py · test_history_routes.py
+│   └── test_freq_cefr.py · test_helpers.py · test_word_anki.py
+│
+├── .github/workflows/ci.yml         # CI: frontend (tsc·lint·test·build) + backend (pytest)
 │
 ├── uploads/                         # Temp PDF storage (auto-created, auto-cleaned)
 ├── requirements.txt
@@ -300,8 +324,8 @@ All endpoints are prefixed with `/api`. Full interactive docs are available at `
 |---|---|---|---|
 | `GET` | `/api/languages` | None | Returns all supported target languages |
 | `POST` | `/api/translate` | Optional | Upload a PDF + target language; returns sentence pairs, word map, frequency data |
-| `POST` | `/api/word` | None | Translate a single word (used for click-to-translate) |
-| `GET` | `/api/export-anki` | None | Download vocabulary as an Anki `.apkg` deck |
+| `POST` | `/api/translate-word` | None | Translate a single word (used for click-to-translate) |
+| `POST` | `/api/export-anki` | None | Download vocabulary as an Anki `.apkg` deck |
 
 ### Authentication
 
@@ -340,41 +364,96 @@ All endpoints are prefixed with `/api`. Full interactive docs are available at `
 
 ## Running Tests
 
-```bash
-# Activate the virtual environment first
-source venv/bin/activate
+**Backend** (pytest — the database is mocked in `conftest.py`, so no MongoDB is required):
 
-pytest tests/ -v
+```bash
+source venv/bin/activate
+pytest
 ```
 
-Tests cover PDF extraction, the translation service, and the API endpoints (using FastAPI's `TestClient`).
+Covers PDF extraction, the translation service, auth/JWT, history routes, frequency/CEFR scoring, and the API endpoints (via FastAPI's `TestClient`).
+
+**Frontend** (from `frontend/`):
+
+```bash
+npm run typecheck   # tsc --build, no emit
+npm run lint        # ESLint (typescript-eslint)
+npm test            # Vitest: SRS logic, hooks, components, api wrapper
+npm run build       # tsc + vite build (the production gate)
+```
+
+Frontend tests deliberately target the riskiest logic: the Leitner spaced-repetition scheduler (`lib/srs.ts`), the persistence hooks, and the API error-handling wrapper.
+
+All four frontend checks plus the backend suite run in CI on every push and pull request — see [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 
 ---
 
-## Design Decisions
+## Decisions & Tradeoffs
 
-**Sentence alignment over paragraph blocks**
-The translator splits text at sentence boundaries and aligns each original sentence with its translation. This makes sync-scrolling precise and enables per-sentence features like pinning and book-page rendering.
+Each choice below lists *what* was chosen, *why*, and *what was given up* — the constraints matter as much as the picks.
 
-**Word frequency via `wordfreq`**
-Rather than a static word list, `wordfreq` provides real-world Zipf frequency scores that are bucketed into four tiers and surfaced as colour-coded CEFR-style badges, giving readers an immediate sense of vocabulary difficulty.
+**Sentence alignment as the core data model**
+The backend splits text on sentence boundaries and pairs each original sentence with its translation, and the entire frontend (sync-scroll, pinning, book pages, cross-highlight) keys off the `data-sentence` index.
+- *Why:* one stable primitive powers every interactive feature, instead of bolting on per-feature data.
+- *Tradeoff:* alignment quality depends on the sentence splitter. Mismatched sentence counts between languages can drift; a sentence-embedding aligner would be more robust but adds latency and a model dependency that isn't justified at this scale.
 
-**`localStorage` for vocabulary**
-The vocabulary notebook is stored client-side so it persists across sessions without requiring authentication, keeping study tools accessible to anonymous users.
+**DOM-driven highlighting instead of React state**
+Hover/cross-panel highlighting mutates `classList` directly (tracked in a ref) rather than re-rendering thousands of word `<span>`s.
+- *Why:* a document can contain thousands of tokens; setting state per hover caused visible lag. Direct class toggling keeps highlighting at one paint, and a tracked list clears it without re-scanning the DOM.
+- *Tradeoff:* this steps outside React's declarative model, so it's covered by intent (the `useCrossHighlight` hook isolates it) rather than being "pure." A virtualized renderer would be the React-idiomatic fix but is overkill for typical document sizes.
 
-**Fullscreen as a separate render tree**
-The fullscreen and book views use dedicated React refs (`fsOrigPanelRef`, `fsTranPanelRef`) rather than CSS transforms. This avoids `position: fixed` stacking-context issues and lets the sync-scroll logic reuse the same handler with a ref-switch pattern controlled by `isFullscreenRef`.
+**`useSyncScroll` as one hook used twice**
+The normal and fullscreen views share a single scroll-sync hook, parameterized by refs and an `enabled` flag.
+- *Why:* the two effects were ~95% identical; one hook removes the drift risk of duplicated logic.
+- *Tradeoff:* the hook reaches into the DOM (`getBoundingClientRect`, `scrollTop`) and assumes the `.sentence-block[data-sentence]` contract — coupling that's documented in the hook rather than abstracted away.
 
-**JWT on every request, `get_optional_user` for guest access**
-Translation is available without an account. The `get_optional_user` FastAPI dependency returns `None` instead of raising a 401, so translation history is only stored when a user is authenticated.
+**TanStack Query for history, local state for everything else**
+Only the translation history (genuine server state) uses TanStack Query; transient UI and study tools stay in component state / `localStorage`.
+- *Why:* history benefits from caching and automatic invalidation after delete/clear; a global store (Redux/Zustand) would be ceremony for a single resource.
+- *Tradeoff:* mixed state strategies in one app. The boundary is deliberate — "is this data owned by the server?" — but a reviewer will rightly ask where the line is, and that's the answer.
+
+**`localStorage`/`sessionStorage` for study data, not the database**
+Vocabulary, SRS boxes, and pins live client-side.
+- *Why:* keeps study tools fully usable for anonymous users with zero backend surface.
+- *Tradeoff:* no cross-device sync and data is lost if storage is cleared. Promoting these to the authenticated user record is the obvious next step (see roadmap), deferred because guest-first access was the priority.
+
+**Word translation via the same Google engine, not a paid API**
+Click-to-translate and word lookups reuse `deep-translator`.
+- *Why:* zero cost and no key management for a portfolio app.
+- *Tradeoff:* unofficial, rate-limit-prone, and not production-SLA. The code isolates translation behind a service boundary so swapping in DeepL/OpenAI is a one-file change.
+
+**JWT in `localStorage` + `get_optional_user` for guest access**
+Auth is optional; the FastAPI dependency returns `None` instead of raising 401, so history is stored only when authenticated.
+- *Why:* lets the core feature work without an account while still supporting persistence for signed-in users.
+- *Tradeoff:* a token in `localStorage` is reachable by XSS. For production I'd move to an httpOnly, SameSite cookie with CSRF protection; the current approach is a conscious portfolio simplification, not an oversight.
+
+**Strict TypeScript with `tsc` gating the build**
+`npm run build` runs `tsc -b && vite build`, so type errors fail CI.
+- *Why:* types that don't block the build rot. Gating makes the type system load-bearing.
+- *Tradeoff:* slightly slower builds and stricter friction on quick changes — accepted in exchange for the API/domain contract being enforced rather than aspirational.
+
+---
+
+## Known Limitations
+
+Being explicit about what this *doesn't* do is part of the design:
+
+- **Text-based PDFs only** — no OCR, so scanned/image PDFs won't extract.
+- **No cross-device study sync** — vocabulary, SRS, and pins are per-browser (see localStorage tradeoff above).
+- **Translation engine is best-effort** — `deep-translator` is unofficial and rate-limited; not suitable for high volume.
+- **No request-level observability** — no structured logging, tracing, or error reporting wired up yet.
+- **Auth token storage** — `localStorage` rather than httpOnly cookies (XSS tradeoff documented above).
+- **Long PDFs block the request** — translation is synchronous; very large files can approach proxy timeouts. A job queue + polling/SSE is the production fix.
 
 ---
 
 ## Roadmap
 
+- [x] Spaced-repetition scheduling for the flashcard quiz (Leitner box system)
+- [ ] Sync vocabulary / SRS / pins to the authenticated user record (cross-device)
 - [ ] OCR support for scanned (image-based) PDFs via Tesseract
+- [ ] Async translation job queue + polling/SSE for large documents
 - [ ] Highlight and annotate sentences directly in the document
-- [ ] Spaced repetition scheduling for the flashcard quiz
 - [ ] Export to PDF with both languages side-by-side
 - [ ] Mobile-optimised book reading mode
 - [ ] DeepL / OpenAI translation backend as an alternative engine

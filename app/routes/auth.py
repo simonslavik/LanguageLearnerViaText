@@ -1,11 +1,12 @@
 """Authentication routes — register, login & Google OAuth."""
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, EmailStr
 
 from app.config import settings
 from app.database import get_db
+from app.limiter import limiter
 from app.services.auth import (
     create_access_token,
     get_current_user,
@@ -28,7 +29,8 @@ class LoginBody(BaseModel):
 
 
 @router.post("/register")
-async def register(body: RegisterBody):
+@limiter.limit("5/minute")
+async def register(request: Request, body: RegisterBody):
     db = get_db()
 
     if len(body.password) < 6:
@@ -56,7 +58,8 @@ async def register(body: RegisterBody):
 
 
 @router.post("/login")
-async def login(body: LoginBody):
+@limiter.limit("10/minute")
+async def login(request: Request, body: LoginBody):
     db = get_db()
     user = await db.users.find_one({"email": body.email})
 
@@ -86,7 +89,8 @@ class GoogleAuthBody(BaseModel):
 
 
 @router.post("/google")
-async def google_login(body: GoogleAuthBody):
+@limiter.limit("10/minute")
+async def google_login(request: Request, body: GoogleAuthBody):
     async with httpx.AsyncClient() as client:
         r = await client.get(
             "https://oauth2.googleapis.com/tokeninfo",
